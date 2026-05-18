@@ -61,7 +61,21 @@ def scale_erosion_params(world_params):
         a_scaled['avalanche_talus'] = slope_from_angle(a_src['avalanche_talus_deg'])
         a_scaled['iterations']      = a_src['air_iterations']
 
-        return h_scaled, t_scaled, a_scaled
+        # --- River ---
+        r_src    = wp['erosion_params']['river']
+        r_scaled = dict(r_src)   # shallow copy
+        # valley width: physical metres → grid cells (minimum 1)
+        r_scaled['valley_width_cells'] = max(1, int(r_src['valley_width_m'] / dx_m))
+        # carve depth: physical metres → normalised [0, 1] height units
+        r_scaled['carve_strength'] = r_src['carve_strength_m'] / dz_m
+        # lake depth threshold: physical metres → normalised [0, 1]
+        r_scaled['min_lake_depth'] = r_src['min_lake_depth_m'] / dz_m
+        # max lake area fraction: passed through unchanged (already dimensionless)
+        r_scaled['max_lake_area_fraction'] = r_src['max_lake_area_fraction']
+        # pass sea-level percentile from world_params (default 0 → no ocean fill)
+        r_scaled['sea_level_percentile'] = wp.get('sea_level_percentile', 0.0)
+
+        return h_scaled, t_scaled, a_scaled, r_scaled
 
 
 def timeit(func):

@@ -5,7 +5,7 @@ from scipy.interpolate import RegularGridInterpolator
 
 from .helper import normalize, get_grid, timeit, scale_erosion_params
 from .noise import diamond_square, domain_warp, fbm
-from .erosion import hydraulic_erosion, thermal_erosion, air_erosion
+from .erosion import hydraulic_erosion, thermal_erosion, air_erosion, river_erosion
 from .plotter import Plotter
 
 
@@ -14,15 +14,17 @@ from .plotter import Plotter
 DEBUG = True
 
 class HMap():
-    def __init__(self, height_map, plotter, lim = (0, 1, 0, 1)):
+    def __init__(self, height_map, river_mask, river_height, plotter, lim = (0, 1, 0, 1)):
         self.height_map = height_map
+        self.river_mask = river_mask
+        self.river_height = river_height
         self.lim = lim
         self.plotter = plotter
 
         self.shape = height_map.shape
 
     def plot(self, save_path = None, shade = True):
-        self.plotter.plot(self.height_map, lim=self.lim, save_path=save_path, shade=shade)
+        self.plotter.plot(self.height_map, lim=self.lim, river_mask=self.river_mask, river_height=self.river_height, save_path=save_path,  shade=shade)
 
 
 class Terrain():
@@ -50,9 +52,12 @@ class Terrain():
         #print("Combined height map before erosion:")
         #self.plotter.plot(combined, shade=True, plot_slope_histogram=False)
         
+        import time
+        st = time.time()
         eroded = self.erode(combined)
-        eroded = normalize(eroded)
-
+        #eroded = normalize(eroded)
+        et = time.time()
+        print(f"Erosion took {et - st:.2f} seconds")
 
         #print("Final:")
         #self.plotter.plot(eroded, shade=True, plot_slope_histogram=False)
@@ -67,11 +72,11 @@ class Terrain():
         X, Y = get_grid(lim = lim, shape=self.world_params['shape'])
         points = np.stack([X.flatten(), Y.flatten()], axis=-1)
         base_map = self.base_map(points).reshape(X.shape)
-        
+
         noise, weights = self.build_noise(base_map, self.world_params['micro_params'], macro = False, lim = lim)
         combined_noise = self.combine_noise(noise, weights)
         combined = base_map + combined_noise 
-        return HMap(combined, self.plotter, lim = lim)
+        return HMap(combined, self._river_mask, self._river_height, self.plotter, lim = lim)
     @timeit
     def build_ds(self):
         ds_params = self.world_params['ds_params']
@@ -84,14 +89,34 @@ class Terrain():
 
     @timeit
     def erode(self, height_map):
-        h_params, t_params, a_params = scale_erosion_params(self.world_params)
+        h_params, t_params, a_params, r_params = scale_erosion_params(self.world_params)
         total_cells = height_map.shape[0] * height_map.shape[1]
         h_params['seed']       = self.world_params['seed'] + 2000
         h_params['iterations'] = int(total_cells * h_params['hydraulic_iterations_density'])
 
         eroded = thermal_erosion(height_map, **t_params)
         eroded = hydraulic_erosion(eroded, **h_params)
+
+        print("After hydraulic and thermal erosion:")
+        self.plotter.plot(eroded)
+        eroded, river_mask, river_height, sea_mask, lake_mask, sea_level = river_erosion(eroded, **r_params)
+        # Store river maps so __init__ can build interpolators from them.
+        self._river_mask   = river_mask
+        self._river_height = river_height
+        print("After river erosion:")
+        masks = {
+            'river_mask': river_mask,
+            'sea_mask': sea_mask,
+            'lake_mask': lake_mask,
+        }
+        
+
         eroded = air_erosion(eroded, **a_params)
+        eroded = normalize(eroded)
+        eroded[eroded <= sea_level] = sea_level
+        eroded -= sea_level
+        self.plotter.plot(eroded, masks = masks)
+        
         return eroded
 
     @timeit

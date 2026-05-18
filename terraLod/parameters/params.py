@@ -23,6 +23,7 @@ world_params = {
     'max_altitude': 3000.0, #max altitude in meters
     'seed': 42, #random seed for noise generation
     'noise_exp_factor': 0.45, #exponent for noise contribution to final height map
+    'sea_level_percentile': 0.25, #percentile of height map to set as sea level
     'ds_params': ds_params,
     'macro_params' : macro_params,
     'micro_params' : micro_params,
