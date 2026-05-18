@@ -15,17 +15,16 @@ from .plotter import Plotter
 DEBUG = True
 
 class HMap():
-    def __init__(self, height_map, river_mask, river_height, plotter, lim = (0, 1, 0, 1)):
+    def __init__(self, height_map, masks, plotter, lim = (0, 1, 0, 1)):
         self.height_map = height_map
-        self.river_mask = river_mask
-        self.river_height = river_height
+        self.masks = masks
         self.lim = lim
         self.plotter = plotter
 
         self.shape = height_map.shape
 
     def plot(self, save_path = None, shade = True):
-        self.plotter.plot(self.height_map, lim=self.lim, river_mask=self.river_mask, river_height=self.river_height, save_path=save_path,  shade=shade)
+        self.plotter.plot(self.height_map, lim=self.lim, masks=self.masks, save_path=save_path,  shade=shade)
 
 
 class Terrain():
@@ -38,32 +37,18 @@ class Terrain():
 
         noise, weights = self.build_noise(ds_base, self.world_params['macro_params'], macro = True)
         combined_noise = self.combine_noise(noise, weights)
-        #print("Combined noise:")
-        #self.plotter.plot(combined_noise, shade=True, plot_slope_histogram=False)
+
         combined_noise = normalize(combined_noise, range =(-1, 1))
 
-        
-
-        #print("Base height map:")
-        #self.plotter.plot(ds_base, shade=True, plot_slope_histogram=False)
 
         
         combined = ds_base * np.exp(self.world_params['noise_exp_factor'] * combined_noise)
         combined = normalize(combined)
-        #print("Combined height map before erosion:")
-        #self.plotter.plot(combined, shade=True, plot_slope_histogram=False)
         
-        import time
-        st = time.time()
-        eroded = self.erode(combined)
-        #eroded = normalize(eroded)
-        et = time.time()
-        print(f"Erosion took {et - st:.2f} seconds")
-
-        #print("Final:")
-        #self.plotter.plot(eroded, shade=True, plot_slope_histogram=False)
+        eroded, masks = self.erode(combined)
 
         self.base_map = self.get_interpolator(eroded)
+        self.masks = masks
 
     
     @timeit
@@ -77,7 +62,10 @@ class Terrain():
         noise, weights = self.build_noise(base_map, self.world_params['micro_params'], macro = False, lim = lim)
         combined_noise = self.combine_noise(noise, weights)
         combined = base_map + combined_noise 
-        return HMap(combined, self._river_mask, self._river_height, self.plotter, lim = lim)
+
+        #TODO create a scaled river mask
+        masks = self.masks
+        return HMap(combined, masks, self.plotter, lim = lim)
     @timeit
     def build_ds(self):
         ds_params = self.world_params['ds_params']
@@ -101,9 +89,7 @@ class Terrain():
         print("After hydraulic and thermal erosion:")
         self.plotter.plot(eroded)
         eroded, river_mask, river_height, sea_mask, lake_mask, sea_level = river_erosion(eroded, **r_params)
-        # Store river maps so __init__ can build interpolators from them.
-        self._river_mask   = river_mask
-        self._river_height = river_height
+
         print("After river erosion:")
         masks = {
             'river_mask': river_mask,
@@ -118,7 +104,7 @@ class Terrain():
         eroded -= sea_level
         self.plotter.plot(eroded, masks = masks)
         
-        return eroded
+        return eroded, masks
 
     @timeit
     def build_noise(self, ds_base, parameters, macro = True, lim = (0, 1, 0, 1)):

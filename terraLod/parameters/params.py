@@ -1,6 +1,7 @@
 from .macro import macro_params
 from .micro import micro_params
 from .erosion import erosion_params
+from .hydro import hydro_params
 
 ds_params = {
     'size_exponent': 11,
@@ -28,5 +29,6 @@ world_params = {
     'macro_params' : macro_params,
     'micro_params' : micro_params,
     'erosion_params': erosion_params,
+    'hydro_params': hydro_params,
     'plotter_params': plotter_params,
 }

@@ -62,7 +62,7 @@ def scale_erosion_params(world_params):
         a_scaled['iterations']      = a_src['air_iterations']
 
         # --- River ---
-        r_src    = wp['erosion_params']['river']
+        r_src    = wp['hydro_params']
         r_scaled = dict(r_src)   # shallow copy
         # valley width: physical metres → grid cells (minimum 1)
         r_scaled['valley_width_cells'] = max(1, int(r_src['valley_width_m'] / dx_m))

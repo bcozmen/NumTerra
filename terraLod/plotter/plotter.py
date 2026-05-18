@@ -14,8 +14,8 @@ class Plotter():
         for key in plotter_params:
             setattr(self, key, plotter_params.get(key, plotter_params[key]))
     def plot(self, height_map, lim=(0.0, 1.0, 0.0, 1.0), 
-        masks = None,
-        save_path=None, shade = True, plot_slope_histogram = True):
+                masks = None,save_path=None, shade = True, plot_slope_histogram = True):
+        
         fig = plt.figure(figsize=(16, 12), constrained_layout=True)
         gs = fig.add_gridspec(1, 2, width_ratios=[1, 1.5], wspace=0.05)
 
