@@ -45,7 +45,8 @@ class Terrain():
         combined = ds_base * np.exp(self.world_params['noise_exp_factor'] * combined_noise)
         combined = normalize(combined)
         
-        eroded, masks = self.erode(combined)
+        eroded = self.erode(combined)
+        eroded, masks = self.init_hydro(eroded)
 
         self.base_map = self.get_interpolator(eroded)
         self.masks = masks
@@ -85,26 +86,26 @@ class Terrain():
 
         eroded = thermal_erosion(height_map, **t_params)
         eroded = hydraulic_erosion(eroded, **h_params)
+        eroded = air_erosion(eroded, **a_params)
 
-        print("After hydraulic and thermal erosion:")
-        self.plotter.plot(eroded)
-        eroded, river_mask, river_height, sea_mask, lake_mask, sea_level = river_erosion(eroded, **r_params)
+        return eroded
 
-        print("After river erosion:")
+    def init_hydro(self, height_map):
+        h_params, t_params, a_params, r_params = scale_erosion_params(self.world_params)
+        eroded, river_mask, river_height, sea_mask, lake_mask, sea_level = river_erosion(height_map, **r_params)
+        eroded = normalize(eroded)
+        eroded[eroded <= sea_level] = sea_level
+        eroded -= sea_level
+
         masks = {
             'river_mask': river_mask,
             'sea_mask': sea_mask,
             'lake_mask': lake_mask,
         }
-        
-
-        eroded = air_erosion(eroded, **a_params)
-        eroded = normalize(eroded)
-        eroded[eroded <= sea_level] = sea_level
-        eroded -= sea_level
         self.plotter.plot(eroded, masks = masks)
-        
         return eroded, masks
+
+
 
     @timeit
     def build_noise(self, ds_base, parameters, macro = True, lim = (0, 1, 0, 1)):
