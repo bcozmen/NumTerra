@@ -5,7 +5,8 @@ from scipy.interpolate import RegularGridInterpolator
 
 from .helper import normalize, get_grid, timeit, scale_erosion_params
 from .noise import diamond_square, domain_warp, fbm
-from .erosion import hydraulic_erosion, thermal_erosion, air_erosion, river_erosion
+from .erosion import hydraulic_erosion, thermal_erosion, air_erosion
+from .hydro import river_erosion
 from .plotter import Plotter
 
 
