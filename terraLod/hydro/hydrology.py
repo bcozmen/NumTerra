@@ -62,7 +62,8 @@ class Hydrology:
         self.height_map      = height_map
         self.xdim, self.ydim = height_map.shape
 
-        self.river_threshold = river_threshold
+        self.river_threshold     = river_threshold
+        self.min_lake_river_acc  = min_lake_river_acc   # was never saved — lakes with no river input survived
         self.sea_level_percentile = sea_level_percentile
         self.init_lake_area_threshold = init_lake_area_threshold
 
@@ -98,7 +99,7 @@ class Hydrology:
             lake_level     — water-surface height per cell
             height_map_out — terrain with eroded spill points
         """
-        water_acc, lake_mask, lake_level, height_map_out = compute_precipitation_accumulation(
+        water_acc, sink_water_base, lake_mask, lake_level, height_map_out = compute_precipitation_accumulation(
             height_map            = self.height_map,
             precipitation_map     = climate.precipitation_map,
             flow_weights          = self.mfd_weights,
@@ -114,9 +115,41 @@ class Hydrology:
         )
 
         self.water_acc      = water_acc
-        self.base_lake_mask      = lake_mask
+        self.base_lake_mask = lake_mask
         self.lake_level     = lake_level
         self.height_map_out = height_map_out
+
+        # Diagnostic: compare lake level vs. original priority-flood fill.
+        # Only compare cells that were in the real (area-filtered) init lakes,
+        # so small depressions reappearing in the budget loop don't pollute the
+        # average.  A negative delta means rim erosion lowered the water surface.
+        real_lake_cells = self.base_lake_mask  # boolean, area-filtered
+        if real_lake_cells.any():
+            delta = float((lake_level[real_lake_cells] - self.base_lake_fill[real_lake_cells]).mean())
+            print(f"[Hydrology.run] mean lake_level delta (real lakes only): {delta:+.4f} "
+                  f"(negative = lake shrank, 0 = unchanged)")
+        n_before = int(lake_mask.sum())
+        print(f"[Hydrology.run] lake cells before min_lake_river_acc filter: {n_before}")
+
+        # Remove lakes that have no meaningful river input — their water came
+        # only from direct precipitation on a few cells with no upstream catchment.
+        # Compare against sink_water_base (water that *pools* at the basin floor
+        # from precipitation routing), NOT water_acc (throughput), which is the
+        # cumulative flow through every cell and is enormous even for tiny lakes
+        # because it includes the entire upstream catchment passing through the
+        # lake's slope cells.  A 10-cell isolated puddle with 260 mm/yr runoff
+        # per cell has sink_water_base.sum() ≈ 2 600 — well below 50 000 — while
+        # its water_acc.max() ≈ 260 000+, which the old code never filtered out.
+        if self.min_lake_river_acc > 0 and lake_mask.any():
+            labeled_lakes, n_lakes = label(lake_mask)
+            for i in range(1, n_lakes + 1):
+                lake_cells   = labeled_lakes == i
+                basin_inflow = float(sink_water_base[lake_cells].sum())
+                if basin_inflow < self.min_lake_river_acc:
+                    lake_mask[lake_cells]  = False
+                    lake_level[lake_cells] = 0.0
+            self.base_lake_mask = lake_mask
+            self.lake_level     = lake_level
 
         # Continuous river field — stored in log space for smooth interpolation.
         # log1p compresses the huge dynamic range of flow accumulation so that

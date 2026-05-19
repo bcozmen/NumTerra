@@ -1,5 +1,5 @@
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from utils import timeit
 
 from scipy.ndimage import (label as _label,
@@ -52,6 +52,7 @@ def compute_precipitation_accumulation(
     Returns
     -------
     throughput     : (R,C) float32 — water through each cell (river signal)
+    sink_water_base: (R,C) float32 — water pooled at basin floors from direct precipitation routing
     lake_mask      : (R,C) bool
     lake_level     : (R,C) float32 — water-surface height (0 outside lakes)
     height_map_out : (R,C) float32 — terrain with eroded spill points
@@ -63,7 +64,16 @@ def compute_precipitation_accumulation(
                                              temperature.astype(np.float32),
                                              float(infiltration_capacity),
                                              float(land_evap_fraction))
-    throughput, sink_water = _route_runoff(height_map, runoff, flow_weights, sea_mask)
+    # Compute sort order once with NumPy (parallel sort) rather than inside
+    # the Numba kernel where argsort is sequential.
+    base_order = np.argsort(-height_map.ravel()).astype(np.int64)
+    throughput, sink_water_base = _route_runoff(height_map, runoff, flow_weights, sea_mask, base_order)
+
+    # Surplus-routing contributions accumulate here across iterations.
+    # Kept separate from sink_water_base so that basin_inflows always sees the
+    # full original precipitation inflow PLUS any routed surplus, never just one
+    # or the other.
+    sink_water_surplus = np.zeros(height_map.shape, dtype=np.float32)
 
     lake_mask  = np.zeros(height_map.shape, dtype=bool)
     lake_level = np.zeros(height_map.shape, dtype=np.float32)
@@ -71,17 +81,35 @@ def compute_precipitation_accumulation(
     # Recompute basin_fill from the (potentially updated) terrain each iteration
     current_basin_fill = basin_fill.copy()
 
-    for _ in range(max_overflow_iterations):
+    for iteration in range(max_overflow_iterations):
+        # Combine original precipitation inflow with surplus routed in from
+        # upstream overflows.  This is the water budget seen by each basin.
+        sink_water = sink_water_base + sink_water_surplus
+
+        # Reset lake state each iteration so previously-overflowed basins are
+        # re-evaluated against the (possibly eroded) terrain.  Without this,
+        # the `settled` check inside _process_all_basins would freeze every lake
+        # after the first overflow, preventing both rim erosion from shrinking
+        # lakes and the cascade from propagating downstream.
+        lake_mask  = np.zeros(height_map.shape, dtype=bool)
+        lake_level = np.zeros(height_map.shape, dtype=np.float32)
+
         lake_mask, lake_level, surplus_runoff, any_overflow = _process_all_basins(
             height_map, height_map_out, sink_water, temperature, sea_mask,
             current_basin_fill, lake_open_evap_mm, spill_erosion_depth,
             lake_mask, lake_level,
         )
 
+        print(f"  [iter {iteration+1:02d}] overflow={any_overflow}  "
+              f"lake_cells={int(lake_mask.sum())}  "
+              f"surplus_nonzero={int(surplus_runoff.astype(bool).sum())}  "
+              f"surplus_total={float(surplus_runoff.sum()):.1f}")
+
         # Stop if nothing overflowed AND no surplus to route.
         # Note: route surplus even when any_overflow is False — partial lakes
         # can still generate a small spill that would otherwise be silently lost.
         if not surplus_runoff.any():
+            print(f"  [iter {iteration+1:02d}] early exit — no surplus to route")
             break
 
         # Route surplus on eroded terrain; new sink_water feeds the next iteration.
@@ -98,16 +126,23 @@ def compute_precipitation_accumulation(
             height_for_routing[lake_mask] = np.clip(
                 lake_level[lake_mask] + 1e-3, 0.0, 1.0
             )
-        flow_weights_eroded    = compute_mfd_weights(height_for_routing, slope_exp)
-        throughput2, sink_water = _route_surplus(
+        flow_weights_eroded         = compute_mfd_weights(height_for_routing, slope_exp)
+        throughput2, sink_water_new = _route_surplus(
             height_map_out, surplus_runoff, flow_weights_eroded, sea_mask,
         )
-        throughput = throughput + throughput2
+        throughput         = throughput + throughput2
+        sink_water_surplus = sink_water_new   # replace (not accumulate) — each
+        # iteration only routes the *current* surplus one step further; the
+        # downstream sinks from previous iterations re-receive their original
+        # precip inflow via sink_water_base anyway.
 
-        # Recompute fill on eroded terrain so the next pass sees lowered saddles
-        _, current_basin_fill = compute_lake_mask(height_map_out, sea_mask)
+        # Recompute fill only when the terrain actually changed (i.e. some rim
+        # was eroded).  Skipping this when any_overflow is False (partial lakes
+        # only) saves a full O(N log N) priority-flood per iteration.
+        if any_overflow:
+            _, current_basin_fill = compute_lake_mask(height_map_out, sea_mask)
 
-    return throughput, lake_mask.astype(bool), lake_level.astype(np.float32), height_map_out
+    return throughput, sink_water_base, lake_mask.astype(bool), lake_level.astype(np.float32), height_map_out
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +258,12 @@ def _process_all_basins(height_map, height_map_out, sink_water, temperature,
     surplus_runoff : (R,C) float32
     any_overflow   : bool
     """
-    basin_depression = (basin_fill > height_map) & (~sea_mask)
+    # Use height_map_out (eroded terrain) not the original height_map.
+    # As rims are lowered, the priority-flood fill level drops, so cells that
+    # were formerly submerged rise above the new fill level and leave the lake.
+    # Using the original height_map here would freeze every lake at its initial
+    # size regardless of how much erosion has occurred.
+    basin_depression = (basin_fill > height_map_out) & (~sea_mask)
 
     if lake_mask is None:
         lake_mask  = np.zeros(height_map.shape, dtype=bool)
@@ -267,6 +307,24 @@ def _process_all_basins(height_map, height_map_out, sink_water, temperature,
     valid    = (~settled) & (spill_heights > basin_floors) & (basin_inflows > 0.0)
     overflow = valid & (basin_inflows >= evap_full)
     partial  = valid & (basin_inflows <  evap_full)
+    dry      = (~settled) & (basin_inflows <= 0.0)
+
+    n_total    = int(n_basins)
+    n_overflow = int(overflow.sum())
+    n_partial  = int(partial.sum())
+    n_dry      = int(dry.sum())
+    n_settled  = int(settled.sum())
+    print(f"    [basins] total={n_total}  overflow={n_overflow}  "
+          f"partial={n_partial}  dry={n_dry}  settled={n_settled}")
+    if n_overflow > 0:
+        print(f"    [overflow sample] inflow={basin_inflows[overflow].mean():.1f}  "
+              f"evap={evap_full[overflow].mean():.1f}  "
+              f"ratio={( basin_inflows[overflow] / evap_full[overflow]).mean():.2f}")
+    if n_partial > 0:
+        fill_fracs = basin_inflows[partial] / evap_full[partial]
+        print(f"    [partial  sample] inflow={basin_inflows[partial].mean():.1f}  "
+              f"evap={evap_full[partial].mean():.1f}  "
+              f"fill_frac_mean={fill_fracs.mean():.3f}")
 
     # ------------------------------------------------------------------ #
     # Partial fill — fully vectorised, no per-basin Python loop           #
@@ -369,14 +427,15 @@ def _route_surplus(height_map_out, surplus_runoff, flow_weights_eroded, sea_mask
     throughput2 : (R,C) float32
     sink_water2 : (R,C) float32
     """
-    return _route_runoff(height_map_out, surplus_runoff, flow_weights_eroded, sea_mask)
+    order = np.argsort(-height_map_out.ravel()).astype(np.int64)
+    return _route_runoff(height_map_out, surplus_runoff, flow_weights_eroded, sea_mask, order)
 
 
 # ---------------------------------------------------------------------------
 # Low-level Numba kernels
 # ---------------------------------------------------------------------------
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _compute_runoff(precipitation_map, temperature, infiltration_capacity, land_evap_fraction):
     """
     Per-cell land losses: infiltration + temperature-scaled evapotranspiration.
@@ -384,7 +443,7 @@ def _compute_runoff(precipitation_map, temperature, infiltration_capacity, land_
     xdim, ydim = precipitation_map.shape
     runoff = np.empty((xdim, ydim), dtype=np.float32)
 
-    for x in range(xdim):
+    for x in prange(xdim):
         for y in range(ydim):
             p = precipitation_map[x, y]
 
@@ -403,7 +462,7 @@ def _compute_runoff(precipitation_map, temperature, infiltration_capacity, land_
 
 
 @njit(cache=True)
-def _route_runoff(height_map, runoff, flow_weights, sea_mask):
+def _route_runoff(height_map, runoff, flow_weights, sea_mask, order):
     """
     MFD routing: distribute runoff downslope, recording throughput per cell.
 
@@ -411,6 +470,12 @@ def _route_runoff(height_map, runoff, flow_weights, sea_mask):
     water as ``throughput`` (river signal) *before* distributing it.
     Local minima with no downhill neighbours accumulate water in ``sink_water``
     (lake inflow signal).  Sea cells absorb all incoming water.
+
+    Parameters
+    ----------
+    order : (N,) int64 — pre-sorted descending-elevation cell indices.
+        Pass ``np.argsort(-height_map.ravel()).astype(np.int64)`` from Python
+        so NumPy's parallel sort is used instead of Numba's sequential one.
 
     Returns
     -------
@@ -426,8 +491,6 @@ def _route_runoff(height_map, runoff, flow_weights, sea_mask):
 
     dx = np.array([-1, -1, -1,  0,  0,  1,  1,  1], dtype=np.int32)
     dy = np.array([-1,  0,  1, -1,  1, -1,  0,  1], dtype=np.int32)
-
-    order = np.argsort(-height_map.ravel())
 
     for i in range(n):
         idx = order[i]

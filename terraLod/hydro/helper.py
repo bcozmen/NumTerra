@@ -1,5 +1,5 @@
 import numpy as np
-from numba import njit
+from numba import njit, prange
 from utils import MinHeap, timeit
 
 
@@ -127,8 +127,7 @@ def detect_sea(height_map, sea_level):
 # ---------------------------------------------------------------------------
 # PHASE 1 — MFD (Multiple Flow Direction) hydrology
 # ---------------------------------------------------------------------------
-@timeit
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def compute_mfd_weights(height_map, slope_exp=1.7):
     """
     For every cell compute normalised flow weights to each of its 8 neighbours.
@@ -156,7 +155,7 @@ def compute_mfd_weights(height_map, slope_exp=1.7):
                      1.0,        1.0,
                      1.41421356, 1.0, 1.41421356], dtype=np.float32)
 
-    for x in range(xdim):
+    for x in prange(xdim):
         for y in range(ydim):
             h     = height_map[x, y]
             total = np.float32(0.0)
