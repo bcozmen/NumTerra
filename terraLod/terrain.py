@@ -77,11 +77,13 @@ class Terrain():
         eroded = gaussian_filter(eroded, sigma=1)
         eroded = normalize(eroded)
 
-        self.base_map    = self.get_interpolator(eroded)
-
-
         self.hydro = self.init_hydro(eroded)
         self.climate = self.init_climate(eroded, self.hydro)
+        eroded = self.hydro.run(self.climate)
+
+
+        self.base_map = eroded
+        self.base_interpolator = self.get_interpolator(eroded)
 
     def init_hydro(self, height_map):
         hydro_params = self.world_params['hydrology_params']
@@ -106,12 +108,11 @@ class Terrain():
         output_shape = shape if shape is not None else self.world_params['shape']
         X, Y = get_grid(lim = lim, shape=output_shape)
         points = np.stack([X.flatten(), Y.flatten()], axis=-1)
-        base_map = self.base_map(points).reshape(X.shape)
+        this_map = self.base_interpolator(points).reshape(X.shape)
 
-        noise, weights = self.build_noise(base_map, self.world_params['micro_params'], macro = False, lim = lim)
+        noise, weights = self.build_noise(this_map, self.world_params['micro_params'], macro = False, lim = lim)
         combined_noise = self.combine_noise(noise, weights)
-        combined = base_map + combined_noise
-
+        combined = this_map + combined_noise
         masks = self.hydro.get_masks(combined, (X, Y))
         climate_maps = self.climate.get_maps() if self.climate is not None else {}
         return HMap(combined, masks, self.plotter, lim=lim, extra_maps=climate_maps)

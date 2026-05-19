@@ -45,7 +45,7 @@ Physical units
 import numpy as np
 import numba
 from scipy.ndimage import label as _scipy_label, gaussian_filter
-
+from utils import timeit
 
 # ---------------------------------------------------------------------------
 # Moisture source map
@@ -67,21 +67,22 @@ def build_moisture_sources(sea_mask: np.ndarray,
 
     out = np.zeros(shape, dtype=np.float32)
     out[sea_mask] = 1.0
-
-    labeled, n_lakes = _scipy_label(lake_mask)
+    out[lake_mask] = 1.0  # default for small lakes with no river input
+    """labeled, n_lakes = _scipy_label(lake_mask)
     for k in range(1, n_lakes + 1):
         mask_k   = labeled == k
         fraction = float(mask_k.sum()) / total_cells
         # sqrt gives smooth monotonic scaling with no plateau discontinuity
         strength = float(np.sqrt(fraction * area_scale))
-        out[mask_k] = np.float32(np.clip(strength, 0.1, 1.0))
+        out[mask_k] = np.float32(np.clip(strength, 0.1, 1.0))"""
 
     return out
 
 
-
+@timeit
 def advect_moisture(sources:       np.ndarray,
                     source_mask:   np.ndarray,
+                    lake_mask:     np.ndarray,
                     height_m:      np.ndarray,
                     wy_field:      np.ndarray,
                     wx_field:      np.ndarray,
@@ -93,6 +94,7 @@ def advect_moisture(sources:       np.ndarray,
                     tol:           float = 1e-4,
                     slope_mag:     np.ndarray | None = None,
                     order:         np.ndarray | None = None,
+                    lake_floor:    np.ndarray | None = None,
                     ) -> tuple[np.ndarray, np.ndarray]:
     """
     Advect moisture from evaporation sources along the terrain-deflected
@@ -102,6 +104,7 @@ def advect_moisture(sources:       np.ndarray,
     ----------
     sources       : (R,C) float32 — evaporation strength [0..1]
     source_mask   : (R,C) bool    — cells whose value is fixed (sea / lake)
+    lake_mask     : (R,C) bool    — lake cells (passed through to the kernel)
     height_m      : (R,C) float32 — altitude above sea level in metres
     wy_field      : (R,C) float32 — local wind y-component (unit vectors)
     wx_field      : (R,C) float32 — local wind x-component (unit vectors)
@@ -120,6 +123,12 @@ def advect_moisture(sources:       np.ndarray,
     order         : (R*C,) int64 (optional) — pre-computed upwind-first cell
                     ordering.  Pass this to skip the argsort when the wind
                     field has not changed since the last call.
+    lake_floor    : (R,C) float32 (optional) — if supplied, lake-basin cells act
+                    as *soft floors*: advection can still exceed the floor value,
+                    but each lake cell retains at least this moisture regardless
+                    of what the upwind path delivers.  Useful during init_run to
+                    keep basin locations as a weak moisture bias without hard-
+                    pinning them like sea cells.
 
     Returns
     -------
@@ -153,10 +162,12 @@ def advect_moisture(sources:       np.ndarray,
     _advect_kernel(
         moisture, orog_precip,
         height_m, slope_mag,
-        source_mask.astype(np.bool_), sources,
+        source_mask.astype(np.bool_), lake_mask.astype(np.bool_), sources,
         wy_field, wx_field,
         step_decay, float(orog_k_per_km), float(slope_beta),
         order, n_iters, float(tol),
+        lake_mask.astype(np.bool_) if lake_floor is not None else None,
+        lake_floor,
     )
 
     # Lateral diffusion: spread moisture perpendicular to the wind axis so that
@@ -206,6 +217,7 @@ def _advect_kernel(moisture:        np.ndarray,   # (R,C) float32, modified in-p
                    height_m:        np.ndarray,   # (R,C) float32
                    slope_mag:       np.ndarray,   # (R,C) float32  [m/m, dimensionless]
                    source_mask:     np.ndarray,   # (R,C) bool
+                   lake_mask:       np.ndarray,   # (R,C) bool
                    sources:         np.ndarray,   # (R,C) float32
                    wy_field:        np.ndarray,   # (R,C) float32
                    wx_field:        np.ndarray,   # (R,C) float32
@@ -214,7 +226,10 @@ def _advect_kernel(moisture:        np.ndarray,   # (R,C) float32, modified in-p
                    slope_beta:      float,
                    order:           np.ndarray,   # (R*C,) int64 upwind-first
                    n_iters:         int,
-                   tol:             float = 1e-4) -> None:
+                   tol:             float = 1e-4,
+                   lake_floor_mask: np.ndarray | None = None,  # (R,C) bool  — soft-floor cells
+                   lake_floor_vals: np.ndarray | None = None,  # (R,C) float32 — floor strengths
+                   ) -> None:
     """
     Run up to `n_iters` upwind-sorted sweeps with conservative moisture transport.
     Exits early when the maximum per-cell change across a full sweep drops below
@@ -227,6 +242,10 @@ def _advect_kernel(moisture:        np.ndarray,   # (R,C) float32, modified in-p
       4. Apply wind-speed efficiency based on local terrain slope.
       5. Apply per-pixel exponential decay (halflife anchored in km).
       6. Max-accumulate so cells fed by multiple paths keep the best value.
+         For ``lake_floor_mask`` cells the moisture is additionally clamped to
+         at least ``lake_floor_vals[i,j]``, making them a *soft floor* —
+         advection can still exceed the floor, but the basin always contributes
+         a minimum moisture bias.
 
     This directly generates:
       - Wet windward slopes (moisture peaks before the crest)
@@ -289,6 +308,13 @@ def _advect_kernel(moisture:        np.ndarray,   # (R,C) float32, modified in-p
             eff = np.exp(-slope_beta * slope_mag[i, j])
 
             candidate = step_decay * eff * m_after_rain
+
+            # Soft floor for lake-basin cells: advection can exceed the floor,
+            # but basins always retain at least their seed moisture value.
+            if lake_floor_mask is not None and lake_floor_mask[i, j]:
+                floor_val = lake_floor_vals[i, j]   # type: ignore[index]
+                if candidate < floor_val:
+                    candidate = floor_val
 
             # Max-accumulate: moisture can only grow across iterations
             delta = candidate - moisture[i, j]

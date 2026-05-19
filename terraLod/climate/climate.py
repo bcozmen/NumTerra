@@ -61,6 +61,7 @@ class Climate:
         self.world_params = world_params
         self.shape        = height_map.shape
 
+        self.hydro      = hydro
         self.sea_level  = hydro.sea_level
         self.sea_mask   = hydro.base_sea_mask
         self.lake_mask  = hydro.base_lake_mask
@@ -99,24 +100,29 @@ class Climate:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-
-    def run(self):
+    def run(self, init_run = True):
+        self._T_cache = None
+        self.temperature_map = None
+        self.humidity_map = None
+        self.precipitation_map = None
+        self.lake_mask = self.hydro.base_lake_mask
         """Compute all climate maps and store them as instance attributes."""
         self._build_wind_field()
 
-        T          = self._compute_temperature()
-        RH, P_orog = self._compute_humidity_and_orog_precip()
-        P          = self._compute_precipitation(RH, P_orog)
+        T          = self._compute_temperature(init_run)
+        RH, P_orog = self._compute_humidity_and_orog_precip(init_run)
+        P          = self._compute_precipitation(RH, P_orog, init_run)
 
-        water_mask               = self.sea_mask | self.lake_mask
+        #water_mask               = self.sea_mask | self.lake_mask
         humidity_out             = np.clip(RH, 0.0, 1.0)
-        humidity_out[water_mask] = 0.0
-        P[water_mask]            = 0.0
+        #humidity_out[water_mask] = 0.0
+        #P[water_mask]            = 0.0
 
         self.temperature_map   = T
         self.humidity_map      = humidity_out
         self.precipitation_map = P
         return self
+        
 
     def get_maps(self) -> dict:
         """Return dict of full-resolution climate maps, running the simulation if needed."""
@@ -162,9 +168,13 @@ class Climate:
     # ------------------------------------------------------------------
     # Temperature
     # ------------------------------------------------------------------
-
+    def get_water_mask(self, init_run):
+        if init_run:
+            return self.sea_mask
+        else:
+            return self.sea_mask | self.lake_mask
     @timeit
-    def _compute_temperature(self) -> np.ndarray:
+    def _compute_temperature(self, init_run) -> np.ndarray:
         """
         T = T_base(lat) − lapse_rate × altitude + continentality − sea_cooling.
 
@@ -192,7 +202,7 @@ class Climate:
         altitude_m = self.height_map_land * float(self.max_altitude)
         lapse      = (6.5e-3 * altitude_m).astype(np.float32)
 
-        water_mask    = self.sea_mask | self.lake_mask
+        water_mask = self.get_water_mask(init_run)
         dist_to_water = distance_transform_edt(~water_mask).astype(np.float32)
         decay_len     = 150_000.0 / self.pixel_size_m
         maritime      = np.exp(-dist_to_water / decay_len)
@@ -210,7 +220,7 @@ class Climate:
     # ------------------------------------------------------------------
 
     @timeit
-    def _compute_humidity_and_orog_precip(self) -> tuple[np.ndarray, np.ndarray]:
+    def _compute_humidity_and_orog_precip(self, init_run) -> tuple[np.ndarray, np.ndarray]:
         """
         Advect moisture from evaporation sources along the terrain-deflected
         wind field, simultaneously computing orographic precipitation via
@@ -228,17 +238,28 @@ class Climate:
 
         sources = build_moisture_sources(self.sea_mask, self.lake_mask)
         sources *= np.float32(float(self.wetness) * 0.6 + 0.4)
-        source_mask = sources > 0.0
+
+        if init_run:
+            # Lakes are not real yet — treat them as soft-floor bias (unpinned).
+            # Sea cells are hard sources; lake cells provide a moisture floor
+            # that advection can exceed but never drop below.
+            source_mask = self.sea_mask
+            lake_floor  = sources * np.float32(0.25)   # floor = 50 % of source strength
+            lake_floor[~self.lake_mask] = 0.0
+        else:
+            source_mask = sources > 0.0
+            lake_floor  = None
 
         moisture, orog_precip = advect_moisture(
-            sources, source_mask, h_m,
+            sources, source_mask, self.lake_mask, h_m,
             self._wy, self._wx,
             self.pixel_size_m, float(self.wetness),
             slope_mag=self._slope_mag,
             order=self._wind_order,
+            lake_floor=lake_floor,
         )
 
-        T        = self._compute_temperature()
+        T        = self._compute_temperature(init_run)
         q_sat    = saturation_capacity(T)
         humidity = (1.0 - np.exp(-moisture / (q_sat + 1e-6))).astype(np.float32)
 
@@ -250,7 +271,7 @@ class Climate:
 
     @timeit
     def _compute_precipitation(self, RH: np.ndarray,
-                               orog_precip_raw: np.ndarray) -> np.ndarray:
+                               orog_precip_raw: np.ndarray, init_run: bool) -> np.ndarray:
         """
         Precipitation = convective component + orographic component.
 
@@ -269,8 +290,8 @@ class Climate:
         precip = conv_precip + 0.5 * orog_precip
         precip = gaussian_filter(precip, sigma=1.5).astype(np.float32)
 
-        land_mask  = ~(self.sea_mask | self.lake_mask)
-        water_mask = self.sea_mask | self.lake_mask
+        water_mask = self.get_water_mask(init_run)
+        land_mask = ~water_mask
 
         land_vals = precip[land_mask]
         if land_vals.size > 0:
