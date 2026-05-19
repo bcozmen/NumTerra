@@ -1,6 +1,6 @@
 
 hydrology_params = {
-    'sea_level_percentile':      0.65,   # percentile of height map to set as sea level
+    'sea_level_percentile':      0.25,   # percentile of height map to set as sea level
     'init_lake_area_threshold':  10,     # km²; lakes smaller than this are removed (area in cells, not km²)
     'river_threshold':           10,     # NOTE: currently unused — river display uses river_threshold_norm in get_river_field
     'min_lake_river_acc':        50000,   # lakes whose peak inflow (mm·cells) is below this are evaporated

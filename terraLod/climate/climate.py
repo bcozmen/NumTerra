@@ -92,8 +92,8 @@ class Climate:
             (h_raw - self.sea_level) / land_scale, 0.0, 1.0
         ).astype(np.float32)
 
-        # Global prevailing wind direction (unit vector)
-        self._wy0, self._wx0 = prevailing_wind(latitude)
+        # Global prevailing wind direction (per-cell, sea-to-inland)
+        self._wy0, self._wx0 = prevailing_wind(self.sea_mask)
         self._wy = self._wx = None
 
         # Cached intermediates

@@ -1,7 +1,7 @@
 climate_params = {
     'latitude': 25.0,   # central latitude of the map in degrees (positive = N hemisphere)
     'precipitation_range' : (200, 2000), # mm per year at the wettest point (for scaling purposes)
-    'wetness':   1.0,   # 0 = arid desert, 1 = very wet tropics
+    'wetness':   0.6,   # 0 = arid desert, 1 = very wet tropics
     'alpha': 0.85,      # wind field balance between geostrophic (0) and orographic (1)
     'orog_k_per_km': 0.05, # orographic precipitation increase per km of elevation (0.05 = 5% per km)
     'slope_beta': 0.025, # slope exponent for orographic precipitation (0.025 = mild)

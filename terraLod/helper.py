@@ -80,7 +80,6 @@ def scale_hydro_params(world_params):
     dy_m = wp['max_size'] / (wp['shape'][1] - 1)
     #km2 to cells: physical area → grid cells (minimum 1 cell)
     h_scaled['init_lake_area_threshold'] = max(1, int(h_src['init_lake_area_threshold'] * 1e6 / (dx_m * dy_m)))
-    print(f"init_lake_area_threshold: {h_src['init_lake_area_threshold']} km² → {h_scaled['init_lake_area_threshold']} cells at {dx_m:.2f} m resolution")
     return h_scaled
 
 

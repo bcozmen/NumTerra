@@ -100,16 +100,11 @@ def compute_precipitation_accumulation(
             lake_mask, lake_level,
         )
 
-        print(f"  [iter {iteration+1:02d}] overflow={any_overflow}  "
-              f"lake_cells={int(lake_mask.sum())}  "
-              f"surplus_nonzero={int(surplus_runoff.astype(bool).sum())}  "
-              f"surplus_total={float(surplus_runoff.sum()):.1f}")
 
         # Stop if nothing overflowed AND no surplus to route.
         # Note: route surplus even when any_overflow is False — partial lakes
         # can still generate a small spill that would otherwise be silently lost.
         if not surplus_runoff.any():
-            print(f"  [iter {iteration+1:02d}] early exit — no surplus to route")
             break
 
         # Route surplus on eroded terrain; new sink_water feeds the next iteration.
@@ -314,17 +309,10 @@ def _process_all_basins(height_map, height_map_out, sink_water, temperature,
     n_partial  = int(partial.sum())
     n_dry      = int(dry.sum())
     n_settled  = int(settled.sum())
-    print(f"    [basins] total={n_total}  overflow={n_overflow}  "
-          f"partial={n_partial}  dry={n_dry}  settled={n_settled}")
-    if n_overflow > 0:
-        print(f"    [overflow sample] inflow={basin_inflows[overflow].mean():.1f}  "
-              f"evap={evap_full[overflow].mean():.1f}  "
-              f"ratio={( basin_inflows[overflow] / evap_full[overflow]).mean():.2f}")
+   
+
     if n_partial > 0:
         fill_fracs = basin_inflows[partial] / evap_full[partial]
-        print(f"    [partial  sample] inflow={basin_inflows[partial].mean():.1f}  "
-              f"evap={evap_full[partial].mean():.1f}  "
-              f"fill_frac_mean={fill_fracs.mean():.3f}")
 
     # ------------------------------------------------------------------ #
     # Partial fill — fully vectorised, no per-basin Python loop           #

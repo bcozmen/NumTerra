@@ -131,10 +131,7 @@ class Hydrology:
             delta = float((lake_level[real_lake_cells] - self.base_lake_fill[real_lake_cells]).mean())
             n_init = int(real_lake_cells.sum())
             n_still_lake = int(lake_mask[real_lake_cells].sum())
-            print(f"[Hydrology.run] init lake cells: {n_init}  still-lake: {n_still_lake}  "
-                  f"lake_level delta vs fill: {delta:+.4f}  (negative = shrank, 0 = same, positive = grew)")
         n_before = int(lake_mask.sum())
-        print(f"[Hydrology.run] lake cells before min_lake_river_acc filter: {n_before}")
 
         # Remove lakes that have no meaningful river input — their water came
         # only from direct precipitation on a few cells with no upstream catchment.
@@ -249,9 +246,6 @@ class Hydrology:
             river_threshold_norm = 0.65   # tune: lower = more/thinner rivers
 
         log_acc_norm = self.river_interp(pts).reshape(height_map.shape)
-        #pring percentiles of log_acc_norm to check that river_threshold_norm is in a good range
-        for p in [50, 75, 90, 95, 99]:
-            print(f"River accumulation percentile {p}: {np.percentile(log_acc_norm, p)}")
         river_acc    = np.expm1(log_acc_norm * self.log_acc_max).astype(np.float32)
 
         river_mask = (log_acc_norm > river_threshold_norm) & ~sea_mask & ~lake_mask

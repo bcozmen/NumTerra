@@ -148,7 +148,6 @@ class Terrain():
             
             noise[..., ix] = self._build_noise_layer(noise_dict, lim = lim) 
             if DEBUG and False:
-                print(f"Noise layer {ix}")
                 self.plotter.plot(noise[..., ix], lim=lim, shade=False, plot_slope_histogram=False)
         return noise, weights
 

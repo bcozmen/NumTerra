@@ -82,10 +82,6 @@ class Hydrology:
         self._height_interp = None
         self._fill_interp   = None
 
-        print(f"sea   cells : {np.sum(self.sea_mask):>8}")
-        print(f"lake  cells : {np.sum(self.lake_mask):>8}")
-        print(f"river paths : {len(self.river_path_starts):>8}")
-        print(f"river cells : {np.sum(self.river_mask):>8}")
 
     # ------------------------------------------------------------------
     # Helpers
