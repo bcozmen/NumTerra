@@ -101,13 +101,16 @@ def advect_moisture(sources:       np.ndarray,
                     wx_field:      np.ndarray,
                     pixel_size_m:  float,
                     wetness:       float,
-                    orog_k_per_km: float = 0.07,
+                    orog_k_per_km: float = 0.05,
                     slope_beta:    float = 0.025,
                     n_iters:       int   = 20,
                     tol:           float = 1e-4,
+                    moisture_diffusion_sigma_km: float = 25.0,
                     slope_mag:     np.ndarray | None = None,
                     order:         np.ndarray | None = None,
                     lake_floor:    np.ndarray | None = None,
+                    plains_halflife_mult: float = 3.0,
+                    plains_flat_slope:   float = 0.01,
                     ) -> tuple[np.ndarray, np.ndarray]:
     """
     Advect moisture from evaporation sources along the terrain-deflected
@@ -142,6 +145,15 @@ def advect_moisture(sources:       np.ndarray,
                     of what the upwind path delivers.  Useful during init_run to
                     keep basin locations as a weak moisture bias without hard-
                     pinning them like sea cells.
+    plains_halflife_mult : float — multiplier applied to the moisture halflife on
+                    completely flat terrain (slope ≈ 0).  Values > 1 let moisture
+                    travel further inland over plains.  E.g. 3.0 → 3× longer
+                    halflife on flat land, smoothly decaying back to 1× on steep
+                    slopes.  Default 3.0.
+    plains_flat_slope    : float — slope threshold [m/m] that defines "flat":
+                    cells with slope < this value receive the full
+                    ``plains_halflife_mult`` boost; cells steeper than ~2×
+                    this value are unaffected.  Default 0.01 (1 % grade).
 
     Returns
     -------
@@ -163,6 +175,19 @@ def advect_moisture(sources:       np.ndarray,
     halflife_pix = halflife_km * 1_000.0 / pixel_size_m
     step_decay   = float(0.5 ** (1.0 / halflife_pix))
 
+    # Plains halflife boost: on flat land the effective halflife is multiplied
+    # by `plains_halflife_mult`, smoothly falling back to 1.0 on steep terrain.
+    # plains_factor[i,j] ∈ [1, plains_halflife_mult]
+    # per-cell effective decay = step_decay ** (1 / plains_factor[i,j])
+    # which is slower (less decay) where plains_factor > 1.
+    if plains_halflife_mult > 1.0:
+        plains_factor = 1.0 + (plains_halflife_mult - 1.0) * np.exp(
+            -slope_mag / plains_flat_slope
+        )
+        plains_factor = plains_factor.astype(np.float32)
+    else:
+        plains_factor = np.ones(sources.shape, dtype=np.float32)
+
     # Upwind-first cell ordering based on mean wind direction.
     if order is None:
         wy_mean = float(wy_field.mean())
@@ -181,6 +206,7 @@ def advect_moisture(sources:       np.ndarray,
         order, n_iters, float(tol),
         lake_mask.astype(np.bool_) if lake_floor is not None else None,
         lake_floor,
+        plains_factor,
     )
 
     # Lateral diffusion: spread moisture perpendicular to the wind axis so that
@@ -188,7 +214,7 @@ def advect_moisture(sources:       np.ndarray,
     # sweep) are filled in.  Physical basis: turbulent mixing and sub-grid
     # convective transport diffuse moisture across ~20-40 km.
     # We diffuse after the kernel so sources stay sharp; sigma = 25 km.
-    sigma_px = 25_000.0 / pixel_size_m
+    sigma_px = moisture_diffusion_sigma_km * 1_000.0 / pixel_size_m
     # Cap sigma so it doesn't become huge on tiny maps
     sigma_px = min(sigma_px, max(rows, cols) * 0.04)
     moisture    = gaussian_filter(moisture,    sigma=sigma_px).astype(np.float32)
@@ -242,6 +268,7 @@ def _advect_kernel(moisture:        np.ndarray,   # (R,C) float32, modified in-p
                    tol:             float = 1e-4,
                    lake_floor_mask: np.ndarray | None = None,  # (R,C) bool  — soft-floor cells
                    lake_floor_vals: np.ndarray | None = None,  # (R,C) float32 — floor strengths
+                   plains_factor:   np.ndarray | None = None,  # (R,C) float32 — local halflife multiplier
                    ) -> None:
     """
     Run up to `n_iters` upwind-sorted sweeps with conservative moisture transport.
@@ -320,7 +347,15 @@ def _advect_kernel(moisture:        np.ndarray,   # (R,C) float32, modified in-p
             # --- Wind-speed efficiency (steep slopes retard transport) -------
             eff = np.exp(-slope_beta * slope_mag[i, j])
 
-            candidate = step_decay * eff * m_after_rain
+            # Plains halflife boost: step_decay^(1/plains_factor) is a slower
+            # (less aggressive) decay on flat terrain.
+            if plains_factor is not None:
+                pf = plains_factor[i, j]
+                local_decay = step_decay ** (1.0 / pf) if pf > 1.0 else step_decay
+            else:
+                local_decay = step_decay
+
+            candidate = local_decay * eff * m_after_rain
 
             # Soft floor for lake-basin cells: advection can exceed the floor,
             # but basins always retain at least their seed moisture value.

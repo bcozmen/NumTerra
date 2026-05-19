@@ -57,9 +57,18 @@ class Climate:
     """
 
     def __init__(self, height_map, hydro, world_params,
-                 latitude=25.0, precipitation_range=(200, 2000), wetness=0.5):
+                 latitude=25.0, precipitation_range=(200, 2000), wetness=0.5, 
+                 alpha =0.5, orog_k_per_km=0.05, slope_beta=0.025, moisture_diffusion_sigma_km=25.0,
+                 plains_halflife_mult=3.0, plains_flat_slope=0.01):
         self.world_params = world_params
         self.shape        = height_map.shape
+
+        self.alpha = alpha
+        self.orog_k_per_km = orog_k_per_km
+        self.slope_beta = slope_beta
+        self.moisture_diffusion_sigma_km = moisture_diffusion_sigma_km
+        self.plains_halflife_mult = plains_halflife_mult
+        self.plains_flat_slope    = plains_flat_slope
 
         self.hydro      = hydro
         self.sea_level  = hydro.sea_level
@@ -107,7 +116,7 @@ class Climate:
         self.precipitation_map = None
         self.lake_mask = self.hydro.base_lake_mask
         """Compute all climate maps and store them as instance attributes."""
-        self._build_wind_field()
+        self._build_wind_field(alpha=self.alpha)
 
         T          = self._compute_temperature(init_run)
         RH, P_orog = self._compute_humidity_and_orog_precip(init_run)
@@ -267,9 +276,13 @@ class Climate:
             sources, source_mask, self.lake_mask, h_m,
             self._wy, self._wx,
             self.pixel_size_m, float(self.wetness),
+            orog_k_per_km=self.orog_k_per_km,
+            slope_beta=self.slope_beta,
             slope_mag=self._slope_mag,
             order=self._wind_order,
             lake_floor=lake_floor,
+            plains_halflife_mult=self.plains_halflife_mult,
+            plains_flat_slope=self.plains_flat_slope,
         )
 
         T        = self._compute_temperature(init_run)

@@ -81,6 +81,7 @@ class Hydrology:
         self.sea_interp = self.get_interpolators(self.base_sea_mask.astype(float))
 
         self.base_lake_mask, self.base_lake_fill = self.init_lake()
+        self._init_lake_mask = self.base_lake_mask.copy()   # snapshot before budget modifies it
         #self.lake_interp = self.get_interpolators(self.base_lake_fill)
 
     def run(self, climate):
@@ -120,14 +121,18 @@ class Hydrology:
         self.height_map_out = height_map_out
 
         # Diagnostic: compare lake level vs. original priority-flood fill.
-        # Only compare cells that were in the real (area-filtered) init lakes,
-        # so small depressions reappearing in the budget loop don't pollute the
-        # average.  A negative delta means rim erosion lowered the water surface.
-        real_lake_cells = self.base_lake_mask  # boolean, area-filtered
+        # Use _init_lake_mask (saved before run() overwrites base_lake_mask) so
+        # we only look at the original large depressions, not cascade-created ones.
+        real_lake_cells = self._init_lake_mask
         if real_lake_cells.any():
+            # For overflow basins: lake_level ≈ spill_height ≈ base_lake_fill → delta ≈ 0
+            # For partial basins:  lake_level < base_lake_fill                → delta < 0
+            # Cells that are init-lake but NOT in new lake_mask have lake_level=0 (dry)
             delta = float((lake_level[real_lake_cells] - self.base_lake_fill[real_lake_cells]).mean())
-            print(f"[Hydrology.run] mean lake_level delta (real lakes only): {delta:+.4f} "
-                  f"(negative = lake shrank, 0 = unchanged)")
+            n_init = int(real_lake_cells.sum())
+            n_still_lake = int(lake_mask[real_lake_cells].sum())
+            print(f"[Hydrology.run] init lake cells: {n_init}  still-lake: {n_still_lake}  "
+                  f"lake_level delta vs fill: {delta:+.4f}  (negative = shrank, 0 = same, positive = grew)")
         n_before = int(lake_mask.sum())
         print(f"[Hydrology.run] lake cells before min_lake_river_acc filter: {n_before}")
 
