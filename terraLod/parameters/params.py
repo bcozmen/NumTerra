@@ -1,7 +1,7 @@
 from .macro import macro_params
 from .micro import micro_params
 from .erosion import erosion_params
-from .hydro import hydro_params
+from .hydro import hydrology_params
 
 ds_params = {
     'size_exponent': 11,
@@ -24,11 +24,10 @@ world_params = {
     'max_altitude': 3000.0, #max altitude in meters
     'seed': 42, #random seed for noise generation
     'noise_exp_factor': 0.45, #exponent for noise contribution to final height map
-    'sea_level_percentile': 0.25, #percentile of height map to set as sea level
     'ds_params': ds_params,
     'macro_params' : macro_params,
     'micro_params' : micro_params,
     'erosion_params': erosion_params,
-    'hydro_params': hydro_params,
+    'hydrology_params': hydrology_params,
     'plotter_params': plotter_params,
 }

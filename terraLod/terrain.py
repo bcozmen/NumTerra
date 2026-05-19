@@ -3,11 +3,13 @@ import matplotlib.pyplot as plt
 
 from scipy.interpolate import RegularGridInterpolator
 
-from .helper import normalize, get_grid, timeit, scale_erosion_params
+from utils import timeit
+from .helper import normalize, get_grid, scale_erosion_params
 from .noise import diamond_square, domain_warp, fbm
 from .erosion import hydraulic_erosion, thermal_erosion, air_erosion
-from .hydro import river_erosion
+from .hydro import Hydrology
 from .plotter import Plotter
+
 
 
 
@@ -23,8 +25,8 @@ class HMap():
 
         self.shape = height_map.shape
 
-    def plot(self, save_path = None, shade = True):
-        self.plotter.plot(self.height_map, lim=self.lim, masks=self.masks, save_path=save_path,  shade=shade)
+    def plot(self, save_path = None, shade = True, plot_slope_histogram = False):
+        self.plotter.plot(self.height_map, lim=self.lim, masks=self.masks, save_path=save_path,  shade=shade, plot_slope_histogram=plot_slope_histogram )
 
 
 class Terrain():
@@ -46,10 +48,18 @@ class Terrain():
         combined = normalize(combined)
         
         eroded = self.erode(combined)
-        eroded, masks = self.init_hydro(eroded)
+        self.hydro = self.init_hydro(eroded)
 
-        self.base_map = self.get_interpolator(eroded)
-        self.masks = masks
+        self.base_map    = self.get_interpolator(eroded)
+        self.fill_interp = self.get_interpolator(self.hydro.fill_level)
+        self.hydro.set_interpolators(self.base_map, self.fill_interp)
+
+        print(f"number of sea cells: {np.sum(self.hydro.sea_mask)}")
+        self.plotter.plot(eroded, masks = self.hydro.get_masks())
+    def init_hydro(self, height_map):
+        hydro_params = self.world_params['hydrology_params']
+        hydro = Hydrology(height_map, **hydro_params)
+        return hydro
 
     
     @timeit
@@ -62,10 +72,9 @@ class Terrain():
 
         noise, weights = self.build_noise(base_map, self.world_params['micro_params'], macro = False, lim = lim)
         combined_noise = self.combine_noise(noise, weights)
-        combined = base_map + combined_noise 
+        combined = base_map + combined_noise
 
-        #TODO create a scaled river mask
-        masks = self.masks
+        masks = self.hydro.get_masks_at(lim, shape=X.shape)
         return HMap(combined, masks, self.plotter, lim = lim)
     @timeit
     def build_ds(self):
@@ -79,7 +88,7 @@ class Terrain():
 
     @timeit
     def erode(self, height_map):
-        h_params, t_params, a_params, r_params = scale_erosion_params(self.world_params)
+        h_params, t_params, a_params = scale_erosion_params(self.world_params)
         total_cells = height_map.shape[0] * height_map.shape[1]
         h_params['seed']       = self.world_params['seed'] + 2000
         h_params['iterations'] = int(total_cells * h_params['hydraulic_iterations_density'])
@@ -90,20 +99,6 @@ class Terrain():
 
         return eroded
 
-    def init_hydro(self, height_map):
-        h_params, t_params, a_params, r_params = scale_erosion_params(self.world_params)
-        eroded, river_mask, river_height, sea_mask, lake_mask, sea_level = river_erosion(height_map, **r_params)
-        eroded = normalize(eroded)
-        eroded[eroded <= sea_level] = sea_level
-        eroded -= sea_level
-
-        masks = {
-            'river_mask': river_mask,
-            'sea_mask': sea_mask,
-            'lake_mask': lake_mask,
-        }
-        self.plotter.plot(eroded, masks = masks)
-        return eroded, masks
 
 
 

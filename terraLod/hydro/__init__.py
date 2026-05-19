@@ -1,1 +1,3 @@
-from .hydro import river_erosion
+from .hydrology import Hydrology
+
+__all__ = ['Hydrology']
