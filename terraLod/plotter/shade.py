@@ -4,7 +4,7 @@ def hillshade(height_map, gradients, lim , max_altitude, max_size, azim, elev):
     cell_size, max_range = get_cell_size(lim, max_size, height_map.shape)
     z = height_map * max_altitude
     
-    dzdy, dzdx = gradients
+    dzdx, dzdy = gradients
     slope = np.arctan(np.sqrt(dzdx**2 + dzdy**2))
     aspect = np.arctan2(-dzdy, dzdx)
 
@@ -32,7 +32,7 @@ def get_3D_shade(self, height_map, gradients, lim, max_size, max_altitude, ambie
 
 def compute_normals(z, gradients, cell_size=(1.0, 1.0), z_scale=1.0):
 
-    dzdy, dzdx = gradients
+    dzdx, dzdy = gradients
 
     normals = np.dstack((
         -dzdx,

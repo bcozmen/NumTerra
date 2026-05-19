@@ -219,127 +219,81 @@ def compute_mfd_accumulation(height_map, flow_weights):
 # ---------------------------------------------------------------------------
 # PHASE 2 — Priority-flood lake detection
 # ---------------------------------------------------------------------------
-@njit(cache=True)
-def compute_lake_mask(height_map, sea_mask):
-    xdim, ydim = height_map.shape
-    n = xdim * ydim
-
-    # ---- flatten inputs (CRITICAL speedup) ----
-    h = height_map.ravel().astype(np.float32)
-    sea = sea_mask.ravel()
-
-    fill = np.empty(n, dtype=np.float32)
-    processed = np.zeros(n, dtype=np.uint8)
-    lake = np.zeros(n, dtype=np.uint8)
-
-    INF = np.float32(1e30)
-    for i in range(n):
-        fill[i] = INF
-
-    heap = MinHeap(n * 4)
-
-    # ---- precomputed offsets (8-neighborhood) ----
-    offsets = np.array([
-        -ydim - 1, -ydim, -ydim + 1,
-        -1,               1,
-         ydim - 1,  ydim, ydim + 1
-    ], dtype=np.int32)
-
-    # ---- seed ocean ----
-    for i in range(n):
-        if sea[i]:
-            fill[i] = h[i]
-            heap.push(i, h[i])
-
-    # ---- priority flood ----
-    while heap.size > 0:
-        idx, fl = heap.pop()
-
-        if processed[idx]:
-            continue
-        processed[idx] = 1
-
-        # mark lake during traversal (removes second pass)
-        if fl > h[idx] and not sea[idx]:
-            lake[idx] = 1
-
-        for k in range(8):
-            nidx = idx + offsets[k]
-
-            if processed[nidx]:
-                continue
-
-            nh = h[nidx]
-
-            # faster than max()
-            if nh > fl:
-                new_fl = nh
-            else:
-                new_fl = fl
-
-            if new_fl < fill[nidx]:
-                fill[nidx] = new_fl
-                heap.push(nidx, new_fl)
-
-    return lake.reshape(xdim, ydim), fill.reshape(xdim, ydim)
-
-
 @timeit
 @njit(cache=True)
-def computer_precipitation_accumulation(height_map, precipitation_map, flow_weights, temperature, infiltration_rate, evaporation_rate):
+def compute_lake_mask(height_map, sea_mask):
+    """
+    Identify lake cells using the priority-flood algorithm.
+
+    Starting from every sea cell, we expand outward in ascending fill-level
+    order (like water slowly rising from the ocean inward).  The fill level
+    at each cell is:
+
+        fill_level[nb] = max(fill_level[current], height_map[nb])
+
+    If we had to "dam" our path to reach a cell (fill_level > height_map),
+    that cell sits inside a closed depression — it is a lake cell.
+
+    This correctly captures entire basin shapes bounded by their pour point,
+    avoiding both the "dot" problem (single sink pixels only) and the
+    "everything is a lake" problem (MFD propagation failing on flat terrain).
+
+    Parameters
+    ----------
+    height_map : float32 array (xdim, ydim)
+    sea_mask   : bool array   (xdim, ydim)
+
+    Returns
+    -------
+    lake_mask  : bool array   (xdim, ydim)
+    """
     xdim, ydim = height_map.shape
     n = xdim * ydim
-
-    water = precipitation_map.ravel().astype(np.float32).copy()
 
     dx = np.array([-1, -1, -1,  0,  0,  1,  1,  1], dtype=np.int32)
     dy = np.array([-1,  0,  1, -1,  1, -1,  0,  1], dtype=np.int32)
 
-    order = np.argsort(-height_map.ravel())
+    INF = np.float64(1e38)
+    fill_level = np.full((xdim, ydim), INF, dtype=np.float64)
+    processed  = np.zeros((xdim, ydim), dtype=np.bool_)
 
-    for i in range(n):
-        idx = order[i]
+    heap = MinHeap(n)
+
+    # Seed: all sea cells — their fill level equals their own elevation
+    for x in range(xdim):
+        for y in range(ydim):
+            if sea_mask[x, y]:
+                fl = np.float64(height_map[x, y])
+                fill_level[x, y] = fl
+                heap.push(x * ydim + y, fl)
+
+    # Priority-flood expansion
+    while heap.size > 0:
+        idx, fl = heap.pop()
         x = idx // ydim
-        y = idx - x * ydim
+        y = idx -  x * ydim
 
-        T = temperature[idx]
-
-        # ----------------------------
-        # temperature normalization
-        # ----------------------------
-        evap_factor = (T - 0.0) / 25.0
-        if evap_factor < 0.0:
-            evap_factor = 0.0
-        elif evap_factor > 1.0:
-            evap_factor = 1.0
-
-        # effective evap
-        evap = evaporation_rate * evap_factor * water[idx]
-        water[idx] -= evap
-
-        # weak infiltration modulation
-        infil_mod = infiltration_rate * (0.5 + 0.5 * evap_factor)
-        infil = infil_mod * water[idx]
-        water[idx] -= infil
-
-        # ----------------------------
-        # MFD routing
-        # ----------------------------
-        w = water[idx]
+        if processed[x, y]:
+            continue
+        processed[x, y] = True
 
         for k in range(8):
-            fw = flow_weights[x, y, k]
-            if fw > 0.0:
-                nx = x + dx[k]
-                ny = y + dy[k]
-                if 0 <= nx < xdim and 0 <= ny < ydim:
-                    nidx = nx * ydim + ny
+            nx = x + dx[k]
+            ny = y + dy[k]
+            if 0 <= nx < xdim and 0 <= ny < ydim and not processed[nx, ny]:
+                new_fl = max(fl, np.float64(height_map[nx, ny]))
+                if new_fl < fill_level[nx, ny]:
+                    fill_level[nx, ny] = new_fl
+                    heap.push(nx * ydim + ny, new_fl)
 
-                    flow = w * fw
-                    water[nidx] += flow
-                    water[idx] -= flow
+    # A cell is a lake where the flood had to rise above the terrain to reach it
+    lake_mask = np.zeros((xdim, ydim), dtype=np.bool_)
+    for x in range(xdim):
+        for y in range(ydim):
+            if not sea_mask[x, y] and fill_level[x, y] > np.float64(height_map[x, y]):
+                lake_mask[x, y] = True
 
-    return water.reshape((xdim, ydim))
+    return lake_mask, fill_level.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------

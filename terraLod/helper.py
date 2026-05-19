@@ -62,7 +62,26 @@ def scale_erosion_params(world_params):
         return h_scaled, t_scaled, a_scaled
 
 
+def scale_hydro_params(world_params):
+    """Return a *copy* of the hydro param dict with any necessary scaling.
 
+    The original in world_params is never mutated, so calling init_hydro()
+    multiple times or changing resolution always starts from the same
+    calibrated base values.
+    """
+    wp = world_params
+    h_src = wp['hydrology_params']
+    h_scaled = dict(h_src)   # shallow copy — original untouched
+
+    # No resolution scaling needed for hydro params, as they are based on flow
+    # accumulation and height percentiles, which are inherently resolution-invariant.
+
+    dx_m = wp['max_size'] / (wp['shape'][0] - 1)
+    dy_m = wp['max_size'] / (wp['shape'][1] - 1)
+    #km2 to cells: physical area → grid cells (minimum 1 cell)
+    h_scaled['init_lake_area_threshold'] = max(1, int(h_src['init_lake_area_threshold'] * 1e6 / (dx_m * dy_m)))
+    print(f"init_lake_area_threshold: {h_src['init_lake_area_threshold']} km² → {h_scaled['init_lake_area_threshold']} cells at {dx_m:.2f} m resolution")
+    return h_scaled
 
 
 def normalize(arr, axis = None,vmin = None, vmax = None, range = (0, 1)):

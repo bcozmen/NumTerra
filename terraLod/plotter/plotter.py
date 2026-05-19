@@ -21,8 +21,10 @@ class Plotter():
 
         z = height_map * self.max_altitude
         cell_size, max_range = get_cell_size(lim, self.max_size, height_map.shape)
-        dzdy, dzdx = np.gradient(z, cell_size[1], cell_size[0])
-        gradients = (dzdy, dzdx)
+        # With ij-indexing: axis 0 = X, axis 1 = Y.
+        # np.gradient(f, d0, d1) → (grad_axis0, grad_axis1) = (dzdx, dzdy)
+        dzdx, dzdy = np.gradient(z, cell_size[0], cell_size[1])
+        gradients = (dzdx, dzdy)
 
         ax1 = fig.add_subplot(gs[0, 0])
         self.plot2D(height_map, gradients, ax=ax1, lim=lim, shade=shade, masks=masks)
@@ -43,7 +45,8 @@ class Plotter():
         x, y = get_grid(lim=lim, shape=height_map.shape)
         cell_size, max_range = get_cell_size(lim, self.max_size, height_map.shape)
 
-        base_color = plt.cm.terrain(height_map)[..., :3]  # RGB only
+        sea_level = masks.get('sea_level', 0.0) if masks else 0.0
+        base_color = self._get_terrain_colors(height_map, sea_level, masks)
         terrain_shade = None
         if shade:
             terrain_shade = get_3D_shade(self, height_map, gradients, lim, self.max_size, self.max_altitude, self.ambient)
@@ -68,7 +71,14 @@ class Plotter():
         if ax is None:
             fig, ax = plt.subplots(figsize=(8, 8))
 
-        ax.imshow(height_map, cmap='terrain', extent=lim, origin='lower', vmin=-0.25, vmax=1)
+        # height_map uses ij-indexing (axis 0 = X, axis 1 = Y).
+        # imshow expects (rows=Y, cols=X) so we must transpose.
+        sea_level = masks.get('sea_level', 0.0) if masks else 0.0
+        terrain_rgb = self._get_terrain_colors(height_map, sea_level, masks)
+        terrain_rgba = np.concatenate(
+            [terrain_rgb, np.ones((*height_map.shape, 1), dtype=np.float32)], axis=-1
+        )
+        ax.imshow(terrain_rgba.transpose(1, 0, 2), extent=lim, origin='lower')
 
         # Draw water BEFORE hillshade so that terrain shadows and valley
         # darkness naturally fall on top of water — this gives rivers/lakes
@@ -78,7 +88,7 @@ class Plotter():
 
         if shade:
             hillshade_map = hillshade(height_map, gradients, lim, self.max_altitude, self.max_size, self.shade_azim, self.shade_elev)
-            ax.imshow(hillshade_map, cmap='gray', extent=lim, origin='lower', alpha=0.45)
+            ax.imshow(hillshade_map.T, cmap='gray', extent=lim, origin='lower', alpha=0.45)
 
         set_labels(ax, z_label=None, title='Height Map with Hillshade')
         return ax
@@ -93,6 +103,44 @@ class Plotter():
         'lake':  np.array([0.00, 0.25, 0.85]),   # lighter lake blue
         'river': np.array([0.25, 0.60, 1.00]),   # bright stream cyan
     }
+
+    def _get_terrain_colors(self, height_map, sea_level=0.0, masks=None):
+        """Return RGB (H×W×3) coloured by elevation relative to *sea_level*.
+
+        * **Above sea level** – remapped into the land portion of the
+          ``terrain`` colormap ([0.22, 1.0]) so colours go green → brown → white.
+        * **Below sea level AND water-masked** – interpolated from a shallow
+          blue to a deep dark navy, getting darker with depth.
+        * **Below sea level but NOT water-masked** (inland depressions, etc.) –
+          treated as land using the lowest end of the land colormap.
+        """
+        rgb   = np.zeros((*height_map.shape, 3), dtype=np.float32)
+
+        # Build a boolean mask for cells that are genuinely water-covered.
+        water_mask = np.zeros(height_map.shape, dtype=np.bool_)
+        if masks:
+            for key in ('sea_mask', 'lake_mask', 'river_mask'):
+                if key in masks:
+                    water_mask |= np.asarray(masks[key]).squeeze() > 0.05
+
+        submerged = (height_map < sea_level) & water_mask   # blue underwater
+        land      = ~submerged                               # everything else: land colourmap
+
+        # --- land (above sea level OR below sea level but not water-masked) ---
+        if np.any(land):
+            land_range = max(1.0 - sea_level, 1e-6)
+            t = 0.22 + (height_map[land] - sea_level) / land_range * (1.0 - 0.22)
+            t = np.clip(t, 0.22, 1.0)
+            rgb[land] = plt.cm.terrain(t)[..., :3]
+
+        # --- water (below sea level AND water-masked) ---
+        if np.any(submerged):
+            depth = np.clip((sea_level - height_map[submerged]) / max(sea_level, 1e-6), 0.0, 1.0)
+            shallow = np.array([0.10, 0.40, 0.85], dtype=np.float32)
+            deep    = np.array([0.00, 0.08, 0.30], dtype=np.float32)
+            rgb[submerged] = shallow[None, :] * (1.0 - depth[:, None]) + deep[None, :] * depth[:, None]
+
+        return rgb
 
     def _paint_water_colors(self, base_color, masks, terrain_shade=None):
         """Return a copy of *base_color* (H×W×3) with water cells painted.
@@ -207,7 +255,8 @@ class Plotter():
             img    = np.zeros((h, w, 4), dtype=np.float32)
             img[..., :3] = colour
             img[..., 3]  = alpha
-            ax.imshow(img, extent=lim, origin='lower', interpolation='nearest')
+            # ij-indexing: axis 0 = X, axis 1 = Y → transpose for imshow
+            ax.imshow(img.transpose(1, 0, 2), extent=lim, origin='lower', interpolation='nearest')
 
         c = self._WATER_COLOURS
         if 'sea_mask'   in masks: _draw(masks['sea_mask'],   c['sea'],   base_alpha=1.0)
@@ -221,14 +270,117 @@ class Plotter():
         if 'river_mask' in masks: legend_items.append(Patch(color=(*c['river'], 1.0), label='River'))
         if legend_items:
             ax.legend(handles=legend_items, loc='lower right', framealpha=0.8, fontsize=8)
+    def plot_overlay(self, height_map, data, title='Map', cmap=None, lim=(0.0, 1.0, 0.0, 1.0),
+                     masks=None, save_path=None):
+        """Plot a scalar climate map (temperature, humidity, …) as the main colour
+        layer with height-map contour lines drawn on top for terrain context.
+        Contour levels are normalised relative to sea level so that:
+          - a thick cyan line marks the coastline (sea_level),
+          - finer lines are spaced evenly over the land portion only.
+
+        Parameters
+        ----------
+        height_map : 2-D float array  (ij-indexed)
+        data       : 2-D float array  (ij-indexed, same shape as height_map)
+        title      : str – used as colorbar label and window title
+        cmap       : matplotlib colormap name (auto-selected per title if None)
+        lim        : (x0, x1, y0, y1) extent
+        masks      : water masks dict (used to extract sea_level)
+        save_path  : optional path to save the figure
+        """
+        _CMAP_DEFAULTS = {
+            'temperature':   'RdYlBu_r',
+            'humidity':      'YlGnBu',
+            'precipitation': 'Blues',
+        }
+        if cmap is None:
+            cmap = _CMAP_DEFAULTS.get(title.lower(), 'viridis')
+
+        sea_level = masks.get('sea_level', 0.0) if masks else 0.0
+
+        fig, ax = plt.subplots(figsize=(9, 8), constrained_layout=True)
+
+        # --- climate map as the main colour layer ---
+        # data uses ij-indexing (axis 0 = X, axis 1 = Y) → transpose for imshow
+        im = ax.imshow(data.T, extent=lim, origin='lower', cmap=cmap,
+                       interpolation='bilinear')
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(title)
+
+        # --- height-map contours on top, levels normalised by sea level ---
+        # get_grid returns X, Y with ij-indexing; contour expects (Y, X) grids
+        from ..helper import get_grid
+        X, Y = get_grid(lim=lim, shape=height_map.shape)
+
+        # Land contour levels: evenly spaced from sea_level to 1.0
+        n_levels = 10
+        land_levels = np.linspace(sea_level, 1.0, n_levels + 2)[1:-1]  # exclude endpoints
+
+        cs = ax.contour(X.T, Y.T, height_map.T, levels=land_levels,
+                        colors='black', linewidths=0.5, alpha=0.45)
+        ax.clabel(cs, inline=True, fontsize=6, fmt='%.2f')
+
+        # Coastline: one bold contour exactly at sea_level
+        if sea_level > 0.0:
+            ax.contour(X.T, Y.T, height_map.T, levels=[sea_level],
+                       colors='cyan', linewidths=1.4, alpha=0.85)
+
+        set_labels(ax, z_label=None, title=f'{title} with Elevation Contours')
+
+        if save_path is not None:
+            plt.savefig(save_path)
+        plt.show()
+        return ax
+
+    def _compute_gradients(self, height_map, lim):
+        """Helper: compute (dzdx, dzdy) for *height_map* given *lim*."""
+        from .helper import get_cell_size
+        z = height_map * self.max_altitude
+        cell_size, _ = get_cell_size(lim, self.max_size, height_map.shape)
+        return np.gradient(z, cell_size[0], cell_size[1])
+
+    def plot_map(self, data, title='Map', cmap='viridis', lim=(0.0, 1.0, 0.0, 1.0),
+                 save_path=None):
+        """
+        Plot any scalar 2-D map (humidity, temperature, precipitation, …)
+        as a simple imshow with a colorbar.
+
+        Parameters
+        ----------
+        data      : 2-D float array  (ij-indexed: axis 0 = X, axis 1 = Y)
+        title     : str
+        cmap      : matplotlib colormap name
+        lim       : (x0, x1, y0, y1) extent
+        save_path : optional file path to save the figure
+        """
+        # Colormap choices that look good per map type
+        _CMAP_DEFAULTS = {
+            'temperature':   'RdYlBu_r',
+            'humidity':      'YlGnBu',
+            'precipitation': 'Blues',
+        }
+        cmap = _CMAP_DEFAULTS.get(title.lower(), cmap)
+
+        fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
+        # ij → (rows=Y, cols=X), so transpose for imshow
+        im = ax.imshow(data.T, extent=lim, origin='lower', cmap=cmap,
+                       interpolation='bilinear')
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label(title)
+        set_labels(ax, z_label=None, title=title)
+        if save_path is not None:
+            plt.savefig(save_path)
+        plt.show()
+        return ax
+
     def plot_slope_histogram(self, height_map, gradients, lim=(0.0, 1.0, 0.0, 1.0), ax=None):
         if ax is None:
             fig, ax = plt.subplots(figsize=(6, 4))
         cell_size, max_range = get_cell_size(lim, self.max_size, height_map.shape)
         
         z = height_map * self.max_altitude
-        dzdy, dzdx = gradients
-        slope = np.arctan(np.sqrt(dzdx**2 + dzdy**2))
+        dzdx, dzdy = gradients
+        slope = np.arctan(np.sqrt(dzdx**2 + dzdy**2))      
         slope = np.degrees(slope) #convert slope to degrees for better interpretability
 
         ax.hist(slope.flatten(), bins=100)

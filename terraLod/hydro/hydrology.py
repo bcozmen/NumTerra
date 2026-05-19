@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.ndimage import label
-
+from scipy.interpolate import RegularGridInterpolator
+from scipy.ndimage import binary_dilation
 from .helper import (
     detect_sea,
     compute_mfd_weights,
@@ -10,6 +11,9 @@ from .helper import (
     compute_river_paths,
     rasterize_river_paths,
 )
+
+
+
 
 class Hydrology:
     """
@@ -35,7 +39,7 @@ class Hydrology:
     both are sharp at any resolution with no re-simulation.
     """
 
-    def __init__(self, height_map, sea_level_percentile, river_threshold,
+    def __init__(self, height_map, sea_level_percentile, init_lake_area_threshold, river_threshold,
                  min_lake_river_acc=None):
         """
         Parameters
@@ -52,130 +56,74 @@ class Hydrology:
 
         self.height_map      = height_map
         self.xdim, self.ydim = height_map.shape
+
         self.river_threshold = river_threshold
+        self.sea_level_percentile = sea_level_percentile
+        self.init_lake_area_threshold = init_lake_area_threshold
 
-        self.sea_level = np.percentile(height_map, sea_level_percentile * 100)
-        self.sea_mask  = detect_sea(height_map, self.sea_level)
+        self.mfd_weights = compute_mfd_weights(height_map)
 
-        self.flow_weights  = compute_mfd_weights(height_map)
-        self.flow_acc      = compute_mfd_accumulation(height_map, self.flow_weights)
-        self.d8_downstream = compute_d8_downstream(self.flow_weights)
+        self.base_sea_mask, self.sea_level = self.init_sea()
+        self.sea_interp = self.get_interpolators(self.base_sea_mask.astype(float))
 
-        raw_lake_mask, self.fill_level = compute_lake_mask(height_map, self.sea_mask)
+        self.base_lake_mask, self.base_lake_fill = self.init_lake()
+        #self.lake_interp = self.get_interpolators(self.base_lake_fill)
 
-        self.lake_mask = self._filter_small_lakes(
-            raw_lake_mask, self.flow_acc, min_lake_river_acc
-        )
+    def run(self, climate):
+        precipitation_map = climate.precipitation_map.copy()
 
-        # Flat numba-friendly path representation
-        self.river_coords, self.river_path_starts, self.river_path_lengths = \
-            compute_river_paths(
-                self.d8_downstream, self.flow_acc,
-                self.sea_mask, self.lake_mask, river_threshold
-            )
+        
+    def init_sea(self):
+        sea_level = np.percentile(self.height_map, self.sea_level_percentile * 100)
+        sea_mask = detect_sea(self.height_map, sea_level)
+        return sea_mask, sea_level
 
-        self.river_mask = rasterize_river_paths(
-            self.river_coords, self.river_path_starts, self.river_path_lengths,
-            0.0, 1.0, 0.0, 1.0, self.xdim, self.ydim
-        )
+    def init_lake(self):
+        lake, fill = compute_lake_mask(self.height_map, self.base_sea_mask)
 
-        self._height_interp = None
-        self._fill_interp   = None
+        labeled_lakes, num_lakes = label(lake)
+        for i in range(1, num_lakes + 1):
+            lake_size = np.sum(labeled_lakes == i)
+            if lake_size < self.init_lake_area_threshold:
+                lake[labeled_lakes == i] = False
+                fill[labeled_lakes == i] = 0
+        fill[lake == False] = 0
+        return lake.astype(bool), fill
 
-        print(f"sea   cells : {np.sum(self.sea_mask):>8}")
-        print(f"lake  cells : {np.sum(self.lake_mask):>8}")
-        print(f"river paths : {len(self.river_path_starts):>8}")
-        print(f"river cells : {np.sum(self.river_mask):>8}")
+    def get_interpolators(self, map_base):
+        x = np.linspace(0, 1, self.xdim)
+        y = np.linspace(0, 1, self.ydim)
+        return RegularGridInterpolator((x, y), map_base)
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+    def get_sea_mask(self, height_map, pts):
+        sea_mask = self.sea_interp(pts).reshape(height_map.shape)
+        sea_prior = sea_mask > 0
+        valid_region = sea_prior | binary_dilation(sea_prior, iterations=10)
 
-    @staticmethod
-    def _filter_small_lakes(lake_mask, flow_acc, min_acc):
-        """
-        Remove connected lake components whose maximum inflow (flow_acc)
-        is below `min_acc`.  Vectorized with np.maximum.at — O(n) single pass,
-        no Python loop over label components.
-        """
-        labeled, n_labels = label(lake_mask)
-        if n_labels == 0:
-            return lake_mask
+        sea_true = height_map < self.sea_level
+        final_sea_mask = sea_true & valid_region
+        return final_sea_mask.astype(bool)
+    def get_lake_mask(self, height_map, pts):
+        lake_mask = self.lake_interp(pts).reshape(height_map.shape)
+        lake_mask = lake_mask > 0
+        valid_region = lake_mask | binary_dilation(lake_mask, iterations=10)
 
-        label_max = np.zeros(n_labels + 1, dtype=flow_acc.dtype)
-        np.maximum.at(label_max, labeled.ravel(), flow_acc.ravel())
-        keep = label_max >= min_acc   # shape (n_labels+1,), index 0 = background
-        keep[0] = False               # index 0 is background — never a lake
-        return keep[labeled]          # broadcast to grid shape
-
-    # ------------------------------------------------------------------
-    # Interpolator injection (called by Terrain after building interps)
-    # ------------------------------------------------------------------
-
-    def set_interpolators(self, height_interp, fill_interp):
-        """
-        Inject RegularGridInterpolators so get_masks_at() works at any zoom.
-
-        Parameters
-        ----------
-        height_interp : RegularGridInterpolator over height_map  in [0,1]²
-        fill_interp   : RegularGridInterpolator over fill_level  in [0,1]²
-        """
-        self._height_interp = height_interp
-        self._fill_interp   = fill_interp
-
-    # ------------------------------------------------------------------
-    # Zoom-level mask generation
-    # ------------------------------------------------------------------
-
-    def get_masks_at(self, lim, shape):
-        """
-        Generate sea / lake / river masks at an arbitrary zoom level.
-
-        Lakes  — interpolate fill_level and height_map; lake where fill > h.
-        Rivers — Bresenham rasterization of the stored vector polylines.
-
-        Parameters
-        ----------
-        lim   : (x0, x1, y0, y1) — view window in [0, 1]²
-        shape : (rows, cols)
-
-        Returns
-        -------
-        dict with keys 'sea_mask', 'lake_mask', 'river_mask'
-        """
-        if self._height_interp is None or self._fill_interp is None:
-            raise RuntimeError("Call set_interpolators() before get_masks_at().")
-
-        x0, x1, y0, y1 = lim
-        rows, cols = shape
-
-        xs = np.linspace(x0, x1, rows)
-        ys = np.linspace(y0, y1, cols)
-        X, Y   = np.meshgrid(xs, ys, indexing='ij')
-        points = np.stack([X.ravel(), Y.ravel()], axis=-1)
-
-        h  = self._height_interp(points).reshape(shape).astype(np.float32)
-        fl = self._fill_interp(points).reshape(shape).astype(np.float32)
-
-        sea_mask   = h <= self.sea_level
-        lake_mask  = (fl > h) & ~sea_mask
-        river_mask = rasterize_river_paths(
-            self.river_coords, self.river_path_starts, self.river_path_lengths,
-            float(x0), float(x1), float(y0), float(y1), rows, cols
-        ) & ~sea_mask
+        #for each lake, use the fill level to determine actual boundary of the lake
+        
+        return lake_mask.astype(bool)
+    def get_masks(self, height_map, grid):
+        X, Y = grid
+        pts = np.stack([X.flatten(), Y.flatten()], axis=-1)
+        
+        sea_mask = self.get_sea_mask(height_map, pts)
 
         return {
-            'sea_mask':   sea_mask,
-            'lake_mask':  lake_mask,
-            'river_mask': river_mask,
+            "sea_mask": sea_mask,
+            "sea_level": self.sea_level,
         }
 
-    def get_masks(self):
-        """Return base-resolution masks (no interpolation needed)."""
-        return {
-            'sea_mask':   self.sea_mask,
-            'lake_mask':  self.lake_mask,
-            'river_mask': self.river_mask,
-        }
 
+
+        
+
+        

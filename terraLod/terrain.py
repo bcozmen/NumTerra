@@ -2,13 +2,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from scipy.interpolate import RegularGridInterpolator
+from scipy.ndimage import gaussian_filter
 
-from utils import timeit
-from .helper import normalize, get_grid, scale_erosion_params
+from .helper import normalize, get_grid, scale_erosion_params, scale_hydro_params
 from .noise import diamond_square, domain_warp, fbm
 from .erosion import hydraulic_erosion, thermal_erosion, air_erosion
 from .hydro import Hydrology
 from .plotter import Plotter
+from .climate.climate import Climate
+
 
 
 
@@ -17,7 +19,7 @@ from .plotter import Plotter
 DEBUG = True
 
 class HMap():
-    def __init__(self, height_map, masks, plotter, lim = (0, 1, 0, 1)):
+    def __init__(self, height_map, masks, plotter, lim=(0, 1, 0, 1), extra_maps=None):
         self.height_map = height_map
         self.masks = masks
         self.lim = lim
@@ -25,8 +27,31 @@ class HMap():
 
         self.shape = height_map.shape
 
-    def plot(self, save_path = None, shade = True, plot_slope_histogram = False):
-        self.plotter.plot(self.height_map, lim=self.lim, masks=self.masks, save_path=save_path,  shade=shade, plot_slope_histogram=plot_slope_histogram )
+        # All plottable maps keyed by name
+        self.maps = {'height': height_map}
+        if extra_maps:
+            self.maps.update(extra_maps)
+
+    def plot(self, key=None, save_path=None, shade=True, plot_slope_histogram=False):
+        """
+        Plot by key.  ``key=None`` (default) renders the full terrain view
+        (2-D hillshaded + 3-D surface).  Any other key plots that scalar map
+        as a 2-D colormap.
+
+        Available keys: 'height', and any climate maps passed in, e.g.
+        'temperature', 'humidity', 'precipitation'.
+        """
+        if key is None or key == 'height':
+            self.plotter.plot(self.height_map, lim=self.lim, masks=self.masks,
+                              save_path=save_path, shade=shade,
+                              plot_slope_histogram=plot_slope_histogram)
+        else:
+            if key not in self.maps:
+                raise KeyError(
+                    f"Map '{key}' not found. Available keys: {list(self.maps.keys())}"
+                )
+            self.plotter.plot_overlay(self.height_map, self.maps[key], title=key,
+                                      lim=self.lim, masks=self.masks, save_path=save_path)
 
 
 class Terrain():
@@ -48,25 +73,38 @@ class Terrain():
         combined = normalize(combined)
         
         eroded = self.erode(combined)
-        self.hydro = self.init_hydro(eroded)
+
+        eroded = gaussian_filter(eroded, sigma=1)
+        eroded = normalize(eroded)
 
         self.base_map    = self.get_interpolator(eroded)
-        self.fill_interp = self.get_interpolator(self.hydro.fill_level)
-        self.hydro.set_interpolators(self.base_map, self.fill_interp)
 
-        print(f"number of sea cells: {np.sum(self.hydro.sea_mask)}")
-        self.plotter.plot(eroded, masks = self.hydro.get_masks())
+
+        self.hydro = self.init_hydro(eroded)
+        self.climate = self.init_climate(eroded, self.hydro)
+
     def init_hydro(self, height_map):
         hydro_params = self.world_params['hydrology_params']
+        hydro_params = scale_hydro_params(self.world_params)
         hydro = Hydrology(height_map, **hydro_params)
+
+        mask = {
+            "sea_mask": hydro.base_sea_mask,
+            "lake_mask": hydro.base_lake_mask,
+        }
+        self.plotter.plot(height_map, masks=mask, plot_slope_histogram=False)
         return hydro
 
+    def init_climate(self, height_map, hydro):
+        climate_params = self.world_params.get('climate_params', {})
+        climate = Climate(height_map, hydro, self.world_params, **climate_params)
+        climate.run()
+        return climate
+
     
-    @timeit
     def generate(self, lim = (0, 1, 0, 1), shape = None):
-        if shape is not None:
-            self.world_params['shape'] = shape
-        X, Y = get_grid(lim = lim, shape=self.world_params['shape'])
+        output_shape = shape if shape is not None else self.world_params['shape']
+        X, Y = get_grid(lim = lim, shape=output_shape)
         points = np.stack([X.flatten(), Y.flatten()], axis=-1)
         base_map = self.base_map(points).reshape(X.shape)
 
@@ -74,9 +112,9 @@ class Terrain():
         combined_noise = self.combine_noise(noise, weights)
         combined = base_map + combined_noise
 
-        masks = self.hydro.get_masks_at(lim, shape=X.shape)
-        return HMap(combined, masks, self.plotter, lim = lim)
-    @timeit
+        masks = self.hydro.get_masks(combined, (X, Y))
+        climate_maps = self.climate.get_maps() if self.climate is not None else {}
+        return HMap(combined, masks, self.plotter, lim=lim, extra_maps=climate_maps)
     def build_ds(self):
         ds_params = self.world_params['ds_params']
         ds_params['seed'] = self.world_params['seed']
@@ -86,7 +124,6 @@ class Terrain():
         
         return ds_base
 
-    @timeit
     def erode(self, height_map):
         h_params, t_params, a_params = scale_erosion_params(self.world_params)
         total_cells = height_map.shape[0] * height_map.shape[1]
@@ -101,8 +138,6 @@ class Terrain():
 
 
 
-
-    @timeit
     def build_noise(self, ds_base, parameters, macro = True, lim = (0, 1, 0, 1)):
         noise = np.zeros((*ds_base.shape, len(parameters)), dtype=ds_base.dtype)
         weights = self.weights_fn(parameters)
@@ -124,12 +159,10 @@ class Terrain():
         base_scales = np.array([p.get('base_freq', 0)  for p in parameters])
         weights = (2 * weights) / base_scales
         return weights
-    @timeit
     def _build_noise_layer(self, noise_dict, lim = (0, 1, 0, 1)):
-        #check if warp_x and warp_y exists and > 0
         X, Y = get_grid(lim = lim, shape=self.world_params['shape'])
-        X, Y = domain_warp(X, Y, **noise_dict)
 
+        X, Y = domain_warp(X, Y, **noise_dict)
         noise = fbm(X, Y, **noise_dict)
         return noise
     def _get_noise_dict(self, noise_params, ix, macro = True):
@@ -138,11 +171,10 @@ class Terrain():
         offset = 0 if macro else 1000
         new_dict['seed'] = self.world_params['seed'] + offset + ix * 174
         return new_dict
-    @timeit
     def get_interpolator(self, grid):
         x = np.linspace(0,1,self.world_params['shape'][0])
         y = np.linspace(0,1,self.world_params['shape'][1])
-        return RegularGridInterpolator((x, y), grid)
+        return RegularGridInterpolator((x, y), grid, bounds_error=False, fill_value=None, method='cubic')
     def _init_plotter(self):
         plotter_params = self.world_params.get('plotter_params', {})
         plotter_params['max_size'] = self.world_params.get('max_size', 100000.0)
@@ -156,6 +188,5 @@ class Terrain():
 
         
         
-
 
 
