@@ -1,7 +1,6 @@
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, binary_dilation
 from scipy.interpolate import RegularGridInterpolator
-from scipy.ndimage import binary_dilation
 from .helper import (
     compute_mfd_weights,
     compute_lake_mask,
@@ -82,7 +81,6 @@ class Hydrology:
 
         self.base_lake_mask, self.base_lake_fill = self.init_lake()
         self._init_lake_mask = self.base_lake_mask.copy()   # snapshot before budget modifies it
-        #self.lake_interp = self.get_interpolators(self.base_lake_fill)
 
     def run(self, climate):
         """
@@ -90,15 +88,11 @@ class Hydrology:
 
         Computes lake equilibrium, lake masks and levels, and a modified
         height map with eroded spill points.  Results are stored as instance
-        attributes and returned as a dict.
+        attributes.
 
         Returns
         -------
-        dict with keys:
-            water_acc      — water throughput per cell (river strength signal)
-            lake_mask      — bool mask of standing water after budget
-            lake_level     — water-surface height per cell
-            height_map_out — terrain with eroded spill points
+        height_map_out : (R,C) float32 — terrain with eroded spill points
         """
         water_acc, sink_water_base, lake_mask, lake_level, height_map_out = compute_precipitation_accumulation(
             height_map            = self.height_map,
@@ -119,19 +113,6 @@ class Hydrology:
         self.base_lake_mask = lake_mask
         self.lake_level     = lake_level
         self.height_map_out = height_map_out
-
-        # Diagnostic: compare lake level vs. original priority-flood fill.
-        # Use _init_lake_mask (saved before run() overwrites base_lake_mask) so
-        # we only look at the original large depressions, not cascade-created ones.
-        real_lake_cells = self._init_lake_mask
-        if real_lake_cells.any():
-            # For overflow basins: lake_level ≈ spill_height ≈ base_lake_fill → delta ≈ 0
-            # For partial basins:  lake_level < base_lake_fill                → delta < 0
-            # Cells that are init-lake but NOT in new lake_mask have lake_level=0 (dry)
-            delta = float((lake_level[real_lake_cells] - self.base_lake_fill[real_lake_cells]).mean())
-            n_init = int(real_lake_cells.sum())
-            n_still_lake = int(lake_mask[real_lake_cells].sum())
-        n_before = int(lake_mask.sum())
 
         # Remove lakes that have no meaningful river input — their water came
         # only from direct precipitation on a few cells with no upstream catchment.
@@ -164,8 +145,7 @@ class Hydrology:
 
         # Lake: interpolate the fill-level surface so get_lake_mask can compare
         # against the zoomed height map — same physics as sea_mask but per-lake.
-        lake_level_interp_map = lake_level.copy()
-        self.lake_level_interp = self.get_interpolators(lake_level_interp_map)
+        self.lake_level_interp = self.get_interpolators(lake_level)
 
         return self.height_map_out
 
@@ -180,11 +160,11 @@ class Hydrology:
 
         labeled_lakes, num_lakes = label(lake)
         for i in range(1, num_lakes + 1):
-            lake_size = np.sum(labeled_lakes == i)
-            if lake_size < self.init_lake_area_threshold:
-                lake[labeled_lakes == i] = False
-                fill[labeled_lakes == i] = 0
-        fill[lake == False] = 0
+            if np.sum(labeled_lakes == i) < self.init_lake_area_threshold:
+                mask = labeled_lakes == i
+                lake[mask] = False
+                fill[mask] = 0.0
+        fill[~lake] = 0.0
         return lake.astype(bool), fill
 
     def get_interpolators(self, map_base):
@@ -243,7 +223,7 @@ class Hydrology:
         resolution-independent.
         """
         if river_threshold_norm is None:
-            river_threshold_norm = 0.65   # tune: lower = more/thinner rivers
+            river_threshold_norm = 0.67   # tune: lower = more/thinner rivers
 
         log_acc_norm = self.river_interp(pts).reshape(height_map.shape)
         river_acc    = np.expm1(log_acc_norm * self.log_acc_max).astype(np.float32)

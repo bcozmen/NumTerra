@@ -1,45 +1,19 @@
 """
 Moisture transport — physically-based moisture advection and source building.
 
-Algorithm: iterative upwind sweep (inside Numba)
-=================================================
-Each iteration visits every non-source cell once, in upwind-first order.
-This pass is **conservative**: orographic precipitation is extracted from
-the moisture budget at each step, so moisture is actually *removed* as air
-rises over terrain, creating genuine rain shadows.
-
-Key design choices
-------------------
-* **Conservative transport** — when air rises, a fraction of its moisture
-  condenses and is removed as orographic precipitation.  The remaining
-  moisture continues downwind.  This directly produces wet windward slopes
-  and dry leeward rain shadows without any artificial blocking factor.
-
-* **Multi-sample advection** — each cell blends two upstream samples
-  (1-step and 2-step back), introducing transport inertia and sharper
-  moisture fronts rather than pure diffusion.
-
-* **Integrated orographic uplift** — the altitude gain over the *last two*
-  upstream steps is accumulated, giving a more realistic estimate of total
-  lifting and suppressing noise from single-cell spikes.
-
-* **Wind-speed modulation** — a terrain-slope-based transport efficiency
-  factor is applied per cell: ``eff = exp(-beta * |slope|)``.  Steep slopes
-  slow moisture transport; gentle terrain allows free flow.
-
-* **Upwind-first order** — cells are sorted by their projection onto the
-  mean wind axis, achieving full-domain propagation in one pass for uniform
-  winds and converging in a handful of passes for rugged terrain.
-
-* **Loop inside Numba** — n_iters iterations run entirely inside a single
-  @njit kernel; there is zero Python overhead per pass.
+Algorithm: iterative upwind sweep (Numba)
+=========================================
+Each sweep visits cells in upwind-first order.  Transport is **conservative**:
+orographic precipitation is extracted from the moisture budget as air rises,
+producing genuine rain shadows.  Multi-sample advection (1- and 2-step
+upstream) adds transport inertia.  Loops exit early once max change < tol.
 
 Physical units
 --------------
-* Exponential decay anchored to a physical half-life in km → independent of
-  grid resolution and map size.
-* Orographic blocking uses altitude in metres → independent of max_altitude.
-* Wind-speed efficiency uses dimensionless slope [m/m] → resolution-independent.
+* Exponential decay anchored to a physical half-life in km.
+* Orographic blocking uses altitude in metres.
+* Wind-efficiency uses dimensionless slope [m/m].
+All are resolution-independent.
 """
 
 import numpy as np
@@ -54,40 +28,36 @@ from utils import timeit
 def build_moisture_sources(sea_mask: np.ndarray,
                             lake_mask: np.ndarray,
                             river_map: np.ndarray | None = None,
+                            
                             river_strength: float = 0.12,
                             ) -> np.ndarray:
     """
     Return a float32 source-strength map.
 
     * Sea   cells → 1.0
-    * Lake  cells → area-scaled per connected component, clamped to [0.1, 1.0].
-                    (area_scale=50 → a lake covering 2 % of the map ≈ 1.0)
-    * River cells → ``river_strength`` × normalised river accumulation (optional).
-                    Rivers add a weaker evaporation bias without overriding lakes/sea.
+    * Lake  cells → area-scaled per connected component, clamped to [0.1, 1.0]
+                    (area_scale=50 → a lake covering 2 % of the map ≈ 1.0).
+    * River cells → ``river_strength`` × normalised accumulation (optional).
     """
-    shape       = sea_mask.shape
-    total_cells = shape[0] * shape[1]
-    area_scale  = 50.0
+    total_cells = sea_mask.size
+    area_scale  = 10.0
 
-    out = np.zeros(shape, dtype=np.float32)
+    out = np.zeros(sea_mask.shape, dtype=np.float32)
     out[sea_mask] = 1.0
 
-    # Area-scale each lake component so large lakes emit more moisture than tiny ones.
     labeled, n_lakes = _scipy_label(lake_mask)
-    for k in range(1, n_lakes + 1):
-        mask_k   = labeled == k
-        fraction = float(mask_k.sum()) / total_cells
-        # sqrt gives smooth monotonic scaling; area_scale=50 → 2% map area → 1.0
-        strength = float(np.sqrt(fraction * area_scale))
-        out[mask_k] = np.float32(np.clip(strength, 0.1, 1.0))
+    if n_lakes:
+        counts    = np.bincount(labeled.ravel(), minlength=n_lakes + 1)
+        fracs     = counts[1:].astype(np.float64) / total_cells
+        strengths = np.clip(np.sqrt(fracs * area_scale), 0.1, 1.0).astype(np.float32)
+        lut       = np.zeros(n_lakes + 1, dtype=np.float32)
+        lut[1:]   = strengths
+        out       = np.where(lake_mask, lut[labeled], out).astype(np.float32)
 
-    # River evaporation: rivers add a soft moisture floor proportional to
-    # their normalised flow accumulation, capped to river_strength.
-    # Only applied where not already a stronger source (sea / lake).
     if river_map is not None:
         river_contrib = (river_map * river_strength).astype(np.float32)
-        water_source  = sea_mask | lake_mask
-        out = np.where(water_source, out, np.maximum(out, river_contrib)).astype(np.float32)
+        out = np.where(sea_mask | lake_mask, out,
+                       np.maximum(out, river_contrib)).astype(np.float32)
 
     return out
 
@@ -114,113 +84,82 @@ def advect_moisture(sources:       np.ndarray,
                     ) -> tuple[np.ndarray, np.ndarray]:
     """
     Advect moisture from evaporation sources along the terrain-deflected
-    wind field and return (moisture, orog_precip_proxy).
+    wind field and return ``(moisture, orog_precip_proxy)``.
+
+    Orographic lifting extracts moisture conservatively at each cell,
+    directly producing rain shadows.  Multi-sample advection (1-step +
+    2-step upstream) adds transport inertia.  Early exit when the maximum
+    per-cell change drops below ``tol``.
 
     Parameters
     ----------
     sources       : (R,C) float32 — evaporation strength [0..1]
-    source_mask   : (R,C) bool    — cells whose value is fixed (sea / lake)
-    lake_mask     : (R,C) bool    — lake cells (passed through to the kernel)
-    height_m      : (R,C) float32 — altitude above sea level in metres
+    source_mask   : (R,C) bool    — cells whose value is fixed (sea)
+    lake_mask     : (R,C) bool    — lake cells
+    height_m      : (R,C) float32 — altitude above sea level [m]
     wy_field      : (R,C) float32 — local wind y-component (unit vectors)
     wx_field      : (R,C) float32 — local wind x-component (unit vectors)
-    pixel_size_m  : float — physical size of one grid pixel in metres
+    pixel_size_m  : float — physical pixel size [m]
     wetness       : float [0,1] — global moisture scalar
-    orog_k_per_km : float — orographic condensation rate [km⁻¹].
-                    Higher → more rain per km of uplift, sharper rain shadows.
-    slope_beta    : float — slope-based wind efficiency decay coefficient.
-                    0 = no slowdown; 0.5 = slope of 2 m/m → ~37 % efficiency.
-    n_iters       : int   — maximum sweep repetitions.
-    tol           : float — early-exit tolerance; sweeps stop when the maximum
-                    per-cell moisture change falls below this value.
-    slope_mag     : (R,C) float32 (optional) — pre-computed terrain slope
-                    magnitude [m/m].  Pass this to avoid an extra np.gradient
-                    call when the caller already has it (e.g. Climate._slope_mag).
-    order         : (R*C,) int64 (optional) — pre-computed upwind-first cell
-                    ordering.  Pass this to skip the argsort when the wind
-                    field has not changed since the last call.
-    lake_floor    : (R,C) float32 (optional) — if supplied, lake-basin cells act
-                    as *soft floors*: advection can still exceed the floor value,
-                    but each lake cell retains at least this moisture regardless
-                    of what the upwind path delivers.  Useful during init_run to
-                    keep basin locations as a weak moisture bias without hard-
-                    pinning them like sea cells.
-    plains_halflife_mult : float — multiplier applied to the moisture halflife on
-                    completely flat terrain (slope ≈ 0).  Values > 1 let moisture
-                    travel further inland over plains.  E.g. 3.0 → 3× longer
-                    halflife on flat land, smoothly decaying back to 1× on steep
-                    slopes.  Default 3.0.
-    plains_flat_slope    : float — slope threshold [m/m] that defines "flat":
-                    cells with slope < this value receive the full
-                    ``plains_halflife_mult`` boost; cells steeper than ~2×
-                    this value are unaffected.  Default 0.01 (1 % grade).
+    orog_k_per_km : orographic condensation rate [km⁻¹]
+    slope_beta    : slope-based wind-efficiency decay coefficient
+    n_iters       : maximum sweep repetitions
+    tol           : early-exit tolerance on max per-cell change
+    slope_mag     : pre-computed terrain slope magnitude [m/m] (avoids recompute)
+    order         : pre-computed upwind-first cell ordering (avoids re-argsort)
+    lake_floor    : soft-floor moisture for lake cells; advection can exceed it
+    plains_halflife_mult : halflife multiplier on flat terrain (> 1 = more inland reach)
+    plains_flat_slope    : slope threshold [m/m] defining "flat" (~1 % grade)
 
     Returns
     -------
-    moisture    : (R,C) float32 — atmospheric moisture after transport [0..1]
-    orog_precip : (R,C) float32 — orographic rain-out proxy [0..1, unnormalised]
+    moisture    : (R,C) float32 — atmospheric moisture [0..1]
+    orog_precip : (R,C) float32 — orographic rain-out proxy [unnormalised]
     """
     rows, cols = sources.shape
 
-    # Terrain slope magnitude [m/m] — only computed when not supplied by caller.
     if slope_mag is None:
         grad_y, grad_x = np.gradient(height_m, pixel_size_m)
-        slope_mag = np.sqrt(grad_y ** 2 + grad_x ** 2).astype(np.float32)
+        slope_mag = np.sqrt(grad_y**2 + grad_x**2).astype(np.float32)
 
     moisture    = sources.copy()
     orog_precip = np.zeros((rows, cols), dtype=np.float32)
 
-    # Per-pixel decay anchored to a physical half-life: 50 km (arid) … 500 km (wet)
-    halflife_km  = 50.0 + wetness * 450.0
-    halflife_pix = halflife_km * 1_000.0 / pixel_size_m
+    # Per-pixel decay: half-life ranges from 50 km (arid) to 500 km (wet)
+    halflife_pix = (50.0 + wetness * 450.0) * 1_000.0 / pixel_size_m
     step_decay   = float(0.5 ** (1.0 / halflife_pix))
 
-    # Plains halflife boost: on flat land the effective halflife is multiplied
-    # by `plains_halflife_mult`, smoothly falling back to 1.0 on steep terrain.
-    # plains_factor[i,j] ∈ [1, plains_halflife_mult]
-    # per-cell effective decay = step_decay ** (1 / plains_factor[i,j])
-    # which is slower (less decay) where plains_factor > 1.
-    if plains_halflife_mult > 1.0:
-        plains_factor = 1.0 + (plains_halflife_mult - 1.0) * np.exp(
-            -slope_mag / plains_flat_slope
-        )
-        plains_factor = plains_factor.astype(np.float32)
-    else:
-        plains_factor = np.ones(sources.shape, dtype=np.float32)
+    # Plains boost: flat cells get a longer effective half-life
+    plains_factor = (
+        (1.0 + (plains_halflife_mult - 1.0) * np.exp(-slope_mag / plains_flat_slope))
+        .astype(np.float32)
+        if plains_halflife_mult > 1.0
+        else np.ones(sources.shape, dtype=np.float32)
+    )
 
-    # Upwind-first cell ordering based on mean wind direction.
     if order is None:
-        wy_mean = float(wy_field.mean())
-        wx_mean = float(wx_field.mean())
-        ii      = np.arange(rows, dtype=np.float32)[:, None]
-        jj      = np.arange(cols, dtype=np.float32)[None, :]
-        proj    = ii * wy_mean + jj * wx_mean
-        order   = np.argsort(proj.ravel()).astype(np.int64)
+        ii    = np.arange(rows, dtype=np.float32)[:, None]
+        jj    = np.arange(cols, dtype=np.float32)[None, :]
+        order = np.argsort(
+            (ii * float(wy_field.mean()) + jj * float(wx_field.mean())).ravel()
+        ).astype(np.int64)
 
     _advect_kernel(
         moisture, orog_precip,
         height_m, slope_mag,
-        source_mask.astype(np.bool_), lake_mask.astype(np.bool_), sources,
+        source_mask, lake_mask, sources,
         wy_field, wx_field,
         step_decay, float(orog_k_per_km), float(slope_beta),
         order, n_iters, float(tol),
-        lake_mask.astype(np.bool_) if lake_floor is not None else None,
+        lake_mask if lake_floor is not None else None,
         lake_floor,
         plains_factor,
     )
 
-    # Lateral diffusion: spread moisture perpendicular to the wind axis so that
-    # advection streaks (the "45-degree line" artifact from a pure directional
-    # sweep) are filled in.  Physical basis: turbulent mixing and sub-grid
-    # convective transport diffuse moisture across ~20-40 km.
-    # We diffuse after the kernel so sources stay sharp; sigma = 25 km.
-    sigma_px = moisture_diffusion_sigma_km * 1_000.0 / pixel_size_m
-    # Cap sigma so it doesn't become huge on tiny maps
-    sigma_px = min(sigma_px, max(rows, cols) * 0.04)
+    sigma_px    = min(moisture_diffusion_sigma_km * 1_000.0 / pixel_size_m,
+                      max(rows, cols) * 0.04)
     moisture    = gaussian_filter(moisture,    sigma=sigma_px).astype(np.float32)
     orog_precip = gaussian_filter(orog_precip, sigma=sigma_px * 0.5).astype(np.float32)
-
-    # Re-pin source cells to their fixed values after diffusion
     moisture[source_mask] = sources[source_mask]
 
     return moisture, orog_precip
@@ -246,8 +185,6 @@ def _bilinear(arr: np.ndarray, fi: float, fj: float,
           + arr[i1, j0] *        di  * (1.0 - dj)
           + arr[i0, j1] * (1.0 - di) *        dj
           + arr[i1, j1] *        di  *        dj)
-
-
 
 
 @numba.njit(cache=True)

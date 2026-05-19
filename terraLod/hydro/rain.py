@@ -3,6 +3,7 @@ from numba import njit, prange
 from utils import timeit
 
 from scipy.ndimage import (label as _label,
+                            binary_dilation as _binary_dilation,
                             minimum  as _ndi_min,
                             maximum  as _ndi_max,
                             sum      as _ndi_sum,
@@ -294,25 +295,11 @@ def _process_all_basins(height_map, height_map_out, sink_water, temperature,
                                   weights=lake_mask.ravel().astype(np.float64))[1:]
     settled        = settled_count >= basin_areas   # all cells already in lake
 
-    # ------------------------------------------------------------------ #
-    # Evaporation capacity (vectorised)                                   #
-    # ------------------------------------------------------------------ #
     evap_full = _lake_evaporation_capacity(basin_areas, T_means, lake_open_evap_mm)
 
     valid    = (~settled) & (spill_heights > basin_floors) & (basin_inflows > 0.0)
     overflow = valid & (basin_inflows >= evap_full)
     partial  = valid & (basin_inflows <  evap_full)
-    dry      = (~settled) & (basin_inflows <= 0.0)
-
-    n_total    = int(n_basins)
-    n_overflow = int(overflow.sum())
-    n_partial  = int(partial.sum())
-    n_dry      = int(dry.sum())
-    n_settled  = int(settled.sum())
-   
-
-    if n_partial > 0:
-        fill_fracs = basin_inflows[partial] / evap_full[partial]
 
     # ------------------------------------------------------------------ #
     # Partial fill — fully vectorised, no per-basin Python loop           #
@@ -388,33 +375,15 @@ def _process_all_basins(height_map, height_map_out, sink_water, temperature,
     return lake_mask, lake_level, surplus_runoff, any_overflow
 
 
-def _get_basin_rim_mask(height_map_out, labeled, basin_id,
-                         spill_h, sea_mask, xdim, ydim):
-    """
-    Return a bool mask of the eroded rim cells for *one* basin.
-    Uses numpy roll-based dilation — no scipy, no per-cell Python loop.
-    """
-    basin = labeled == basin_id
-    # 8-connected dilation via roll
-    dilated = basin.copy()
-    for dx, dy in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]:
-        dilated |= np.roll(np.roll(basin, dx, axis=0), dy, axis=1)
-    rim = dilated & ~basin & ~sea_mask & (height_map_out <= spill_h + 1e-4)
-    return rim
+def _get_basin_rim_mask(height_map_out, labeled, basin_id, spill_h, sea_mask, xdim, ydim):
+    """Bool mask of eroded rim cells for one basin (8-connected border)."""
+    basin   = labeled == basin_id
+    rim     = _binary_dilation(basin) & ~basin & ~sea_mask
+    return rim & (height_map_out <= spill_h + 1e-4)
 
 
 def _route_surplus(height_map_out, surplus_runoff, flow_weights_eroded, sea_mask):
-    """
-    Route surplus overflow water on the current (eroded) terrain.
-
-    Returns the throughput contribution from this pass and the new sink_water
-    that feeds the next basin-equilibrium iteration.
-
-    Returns
-    -------
-    throughput2 : (R,C) float32
-    sink_water2 : (R,C) float32
-    """
+    """Route surplus overflow water on the current (eroded) terrain."""
     order = np.argsort(-height_map_out.ravel()).astype(np.int64)
     return _route_runoff(height_map_out, surplus_runoff, flow_weights_eroded, sea_mask, order)
 

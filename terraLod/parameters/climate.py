@@ -3,6 +3,7 @@ climate_params = {
     'precipitation_range' : (200, 2000), # mm per year at the wettest point (for scaling purposes)
     'wetness':   0.6,   # 0 = arid desert, 1 = very wet tropics
     'alpha': 0.85,      # wind field balance between geostrophic (0) and orographic (1)
+    'thermal_wind_factor': 0.2, # how much the thermal wind contributes to the overall wind field (0.1 = 10%)
     'orog_k_per_km': 0.05, # orographic precipitation increase per km of elevation (0.05 = 5% per km)
     'slope_beta': 0.025, # slope exponent for orographic precipitation (0.025 = mild)
     'moisture_diffusion_sigma_km': 20.0, # km, controls how much moisture is diffused across the map

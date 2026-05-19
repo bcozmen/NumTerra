@@ -270,6 +270,81 @@ class Plotter():
         if 'river_mask' in masks: legend_items.append(Patch(color=(*c['river'], 1.0), label='River'))
         if legend_items:
             ax.legend(handles=legend_items, loc='lower right', framealpha=0.8, fontsize=8)
+    def plot_wind(self, height_map, wind_map, lim=(0.0, 1.0, 0.0, 1.0),
+                  masks=None, save_path=None, quiver_density=40):
+        """
+        Plot the wind vector field as a quiver plot on top of a hillshaded
+        terrain background.
+
+        Parameters
+        ----------
+        height_map    : 2-D float array (ij-indexed, axis 0 = X, axis 1 = Y)
+        wind_map      : (R, C, 2) float32 — channel 0 = wy (row), 1 = wx (col)
+        lim           : (x0, x1, y0, y1) plot extent
+        masks         : water-mask dict (sea_mask, lake_mask, …)
+        save_path     : optional path to save the figure
+        quiver_density: approximate number of arrows along the longer axis
+        """
+        from ..helper import get_grid
+
+        fig, ax = plt.subplots(figsize=(9, 8), constrained_layout=True)
+
+        # --- terrain background: hillshaded height map ---
+        sea_level = masks.get('sea_level', 0.0) if masks else 0.0
+        terrain_rgb = self._get_terrain_colors(height_map, sea_level, masks)
+        terrain_rgba = np.concatenate(
+            [terrain_rgb, np.ones((*height_map.shape, 1), dtype=np.float32)], axis=-1
+        )
+        ax.imshow(terrain_rgba.transpose(1, 0, 2), extent=lim, origin='lower')
+        if masks is not None:
+            self._overlay_water_masks(ax, masks, lim)
+
+        z = height_map * self.max_altitude
+        cell_size, _ = get_cell_size(lim, self.max_size, height_map.shape)
+        dzdx, dzdy = np.gradient(z, cell_size[0], cell_size[1])
+        hs = hillshade(height_map, (dzdx, dzdy), lim,
+                       self.max_altitude, self.max_size,
+                       getattr(self, 'shade_azim', 45),
+                       getattr(self, 'shade_elev', 30))
+        ax.imshow(hs.T, cmap='gray', extent=lim, origin='lower', alpha=0.40)
+
+        # --- subsample grid for quiver ---
+        rows, cols = height_map.shape
+        step = max(rows, cols) // quiver_density
+        step = max(step, 1)
+        si = np.arange(0, rows, step)
+        sj = np.arange(0, cols, step)
+
+        # Convert ij grid indices to plot coordinates
+        x0, x1, y0, y1 = lim
+        xs = x0 + (si + 0.5) / rows * (x1 - x0)
+        ys = y0 + (sj + 0.5) / cols * (y1 - y0)
+        X_q, Y_q = np.meshgrid(xs, ys, indexing='ij')
+
+        # wind_map: axis 0 = row, axis 1 = col, axis 2 = [wy, wx]
+        wy_sub = wind_map[si[:, None], sj[None, :], 0]  # row component  → plot-Y
+        wx_sub = wind_map[si[:, None], sj[None, :], 1]  # col component  → plot-X
+
+        # In ij-indexing axis-0 increases downward in array but upward in plot
+        # (origin='lower'), so wy maps to +plot_y.
+        ax.quiver(
+            X_q, Y_q,           # positions
+            wx_sub, wy_sub,     # (U=col, V=row)
+            pivot='mid',
+            color='white',
+            alpha=0.75,
+            scale=quiver_density * 1.5,
+            width=0.003,
+            headwidth=3,
+            headlength=4,
+        )
+
+        set_labels(ax, z_label=None, title='Wind Field')
+        if save_path is not None:
+            plt.savefig(save_path)
+        plt.show()
+        return ax
+
     def plot_overlay(self, height_map, data, title='Map', cmap=None, lim=(0.0, 1.0, 0.0, 1.0),
                      masks=None, save_path=None):
         """Plot a scalar climate map (temperature, humidity, …) as the main colour

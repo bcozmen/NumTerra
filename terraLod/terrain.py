@@ -39,12 +39,17 @@ class HMap():
         as a 2-D colormap.
 
         Available keys: 'height', and any climate maps passed in, e.g.
-        'temperature', 'humidity', 'precipitation'.
+        'temperature', 'humidity', 'precipitation', 'wind'.
         """
         if key is None or key == 'height':
             self.plotter.plot(self.height_map, lim=self.lim, masks=self.masks,
                               save_path=save_path, shade=shade,
                               plot_slope_histogram=plot_slope_histogram)
+        elif key == 'wind':
+            if 'wind' not in self.maps:
+                raise KeyError("Wind map not available.")
+            self.plotter.plot_wind(self.height_map, self.maps['wind'],
+                                   lim=self.lim, masks=self.masks, save_path=save_path)
         else:
             if key not in self.maps:
                 raise KeyError(
