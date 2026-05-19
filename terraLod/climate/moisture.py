@@ -52,14 +52,18 @@ from utils import timeit
 # ---------------------------------------------------------------------------
 
 def build_moisture_sources(sea_mask: np.ndarray,
-                            lake_mask: np.ndarray) -> np.ndarray:
+                            lake_mask: np.ndarray,
+                            river_map: np.ndarray | None = None,
+                            river_strength: float = 0.12,
+                            ) -> np.ndarray:
     """
     Return a float32 source-strength map.
 
-    * Sea  cells  → 1.0
-    * Lake cells  → proportional to their connected-component area,
-                    clamped to [0.05, 0.85].
-                    (area_scale=50 means 2 % of the map ≈ 1.0)
+    * Sea   cells → 1.0
+    * Lake  cells → area-scaled per connected component, clamped to [0.1, 1.0].
+                    (area_scale=50 → a lake covering 2 % of the map ≈ 1.0)
+    * River cells → ``river_strength`` × normalised river accumulation (optional).
+                    Rivers add a weaker evaporation bias without overriding lakes/sea.
     """
     shape       = sea_mask.shape
     total_cells = shape[0] * shape[1]
@@ -67,14 +71,23 @@ def build_moisture_sources(sea_mask: np.ndarray,
 
     out = np.zeros(shape, dtype=np.float32)
     out[sea_mask] = 1.0
-    out[lake_mask] = 1.0  # default for small lakes with no river input
-    """labeled, n_lakes = _scipy_label(lake_mask)
+
+    # Area-scale each lake component so large lakes emit more moisture than tiny ones.
+    labeled, n_lakes = _scipy_label(lake_mask)
     for k in range(1, n_lakes + 1):
         mask_k   = labeled == k
         fraction = float(mask_k.sum()) / total_cells
-        # sqrt gives smooth monotonic scaling with no plateau discontinuity
+        # sqrt gives smooth monotonic scaling; area_scale=50 → 2% map area → 1.0
         strength = float(np.sqrt(fraction * area_scale))
-        out[mask_k] = np.float32(np.clip(strength, 0.1, 1.0))"""
+        out[mask_k] = np.float32(np.clip(strength, 0.1, 1.0))
+
+    # River evaporation: rivers add a soft moisture floor proportional to
+    # their normalised flow accumulation, capped to river_strength.
+    # Only applied where not already a stronger source (sea / lake).
+    if river_map is not None:
+        river_contrib = (river_map * river_strength).astype(np.float32)
+        water_source  = sea_mask | lake_mask
+        out = np.where(water_source, out, np.maximum(out, river_contrib)).astype(np.float32)
 
     return out
 

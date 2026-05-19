@@ -80,6 +80,7 @@ class Terrain():
         self.hydro = self.init_hydro(eroded)
         self.climate = self.init_climate(eroded, self.hydro)
         eroded = self.hydro.run(self.climate)
+        self.climate.run(init_run =False)
 
 
         self.base_map = eroded
@@ -189,5 +190,4 @@ class Terrain():
 
         
         
-
 

@@ -18,7 +18,8 @@ def compute_precipitation_accumulation(
         land_evap_fraction=0.30,
         lake_open_evap_mm=900.0,
         spill_erosion_depth=0.002,
-        max_overflow_iterations=5):
+        max_overflow_iterations=5,
+        slope_exp=1.7):
     """
     Full precipitation-driven water budget with lake equilibrium.
 
@@ -77,11 +78,27 @@ def compute_precipitation_accumulation(
             lake_mask, lake_level,
         )
 
-        if not any_overflow or not surplus_runoff.any():
+        # Stop if nothing overflowed AND no surplus to route.
+        # Note: route surplus even when any_overflow is False — partial lakes
+        # can still generate a small spill that would otherwise be silently lost.
+        if not surplus_runoff.any():
             break
 
-        # Route surplus on eroded terrain; new sink_water feeds the next iteration
-        flow_weights_eroded    = compute_mfd_weights(height_map_out)
+        # Route surplus on eroded terrain; new sink_water feeds the next iteration.
+        # IMPORTANT: raise already-flooded lake cells to their water-surface level
+        # before computing routing weights.  Without this, the MFD weights from
+        # an eroded rim cell strongly favour the deep basin interior (steep slope
+        # back to the lake floor) over the shallow outflow slope toward the next
+        # basin — roughly 95 % of surplus flows back into the full lake and only
+        # ~5 % reaches the next basin, killing the river cascade after 1–2 hops.
+        # By raising flooded cells to lake_level + ε the basin interior appears
+        # *higher* than the eroded rim, so all routing weight points downstream.
+        height_for_routing = height_map_out.copy()
+        if lake_mask.any():
+            height_for_routing[lake_mask] = np.clip(
+                lake_level[lake_mask] + 1e-3, 0.0, 1.0
+            )
+        flow_weights_eroded    = compute_mfd_weights(height_for_routing, slope_exp)
         throughput2, sink_water = _route_surplus(
             height_map_out, surplus_runoff, flow_weights_eroded, sea_mask,
         )
@@ -301,21 +318,26 @@ def _process_all_basins(height_map, height_map_out, sink_water, temperature,
         spill_level_map       = spill_level_1d[labeled]
         lake_level[overflow_union] = spill_level_map[overflow_union]
 
-        # Surplus at outlet: distribute over rim cells (or basin if border)
-        # Re-use rim_count from Numba kernel; we need per-basin rim mask for deposit
+        # Surplus at outlet: concentrate at the single lowest rim cell so that
+        # the outflow forms one strong river rather than many weak trickles.
         for i, (bid, surplus, rc) in enumerate(zip(oids, surpluses, rim_count)):
-            n_outlet = rc if rc > 0 else int(basin_areas[bid - 1])
-            if n_outlet == 0:
+            if surplus <= 0.0:
                 continue
             if rc > 0:
-                # deposit on the (already-eroded) rim cells of this basin
-                # We need the rim mask — cheaply: cells outside basin with
-                # height_map_out <= new_spill and labelled-neighbour == bid
+                # Get the eroded rim mask for this basin
                 outlet = _get_basin_rim_mask(height_map_out, labeled, bid,
                                               o_spill_h[i], sea_mask, xdim, ydim)
-            else:
-                outlet = labeled == bid
-            surplus_runoff[outlet] += float(surplus) / max(int(outlet.sum()), 1)
+                if outlet.any():
+                    # Deposit ALL surplus at the single lowest rim cell — this
+                    # is the true spill point and seeds one coherent outlet river.
+                    outlet_heights = np.where(outlet, height_map_out, np.inf)
+                    lowest = np.unravel_index(np.argmin(outlet_heights), height_map_out.shape)
+                    surplus_runoff[lowest] += float(surplus)
+                    continue
+            # Fallback (no identifiable rim): spread over the whole basin
+            outlet = labeled == bid
+            n_outlet = max(int(outlet.sum()), 1)
+            surplus_runoff[outlet] += float(surplus) / n_outlet
 
     return lake_mask, lake_level, surplus_runoff, any_overflow
 

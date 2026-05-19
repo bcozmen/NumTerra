@@ -129,14 +129,16 @@ def detect_sea(height_map, sea_level):
 # ---------------------------------------------------------------------------
 @timeit
 @njit(cache=True)
-def compute_mfd_weights(height_map):
+def compute_mfd_weights(height_map, slope_exp=1.7):
     """
     For every cell compute normalised flow weights to each of its 8 neighbours.
 
     A neighbour only receives weight when it is strictly lower than the source
-    cell.  Weights are proportional to slope (Δh / distance) and normalised so
-    they sum to 1.0 per cell.  Cells that are local minima (sinks) or flat get
-    all-zero weight vectors.
+    cell.  Weights are proportional to ``slope ** slope_exp`` (Freeman 1991).
+    Using slope_exp > 1 concentrates flow into the steepest paths, producing
+    channelised rivers rather than a diffuse wetness haze.  slope_exp = 1 is
+    the original linear MFD; slope_exp → ∞ approaches single-flow D8.
+    Recommended range: 1.0 (dispersed) – 2.5 (channelised).
 
     Returns
     -------
@@ -165,7 +167,7 @@ def compute_mfd_weights(height_map):
                 if 0 <= nx < xdim and 0 <= ny < ydim:
                     dh = h - height_map[nx, ny]
                     if dh > 0.0:
-                        slope = dh / dist[k]
+                        slope = (dh / dist[k]) ** slope_exp
                         flow_weights[x, y, k] = slope
                         total += slope
 

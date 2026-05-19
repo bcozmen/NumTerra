@@ -236,7 +236,15 @@ class Climate:
         """
         h_m = self.height_map_land * float(self.max_altitude)
 
-        sources = build_moisture_sources(self.sea_mask, self.lake_mask)
+        # Build normalised river accumulation map for moisture sourcing (2nd pass only).
+        river_map = None
+        if not init_run and hasattr(self.hydro, 'water_acc'):
+            raw = self.hydro.water_acc.astype(np.float32)
+            log_raw = np.log1p(raw)
+            peak = float(log_raw.max()) + 1e-9
+            river_map = (log_raw / peak).astype(np.float32)   # [0, 1], log-compressed
+
+        sources = build_moisture_sources(self.sea_mask, self.lake_mask, river_map=river_map)
         sources *= np.float32(float(self.wetness) * 0.6 + 0.4)
 
         if init_run:
@@ -244,11 +252,16 @@ class Climate:
             # Sea cells are hard sources; lake cells provide a moisture floor
             # that advection can exceed but never drop below.
             source_mask = self.sea_mask
-            lake_floor  = sources * np.float32(0.25)   # floor = 50 % of source strength
+            lake_floor  = sources * np.float32(0.25)   # floor = 25 % of source strength
             lake_floor[~self.lake_mask] = 0.0
         else:
-            source_mask = sources > 0.0
-            lake_floor  = None
+            # Only sea cells are hard-pinned.  Lakes and rivers both act as
+            # soft floors so that advection from nearby sea can freely exceed
+            # the lake's own evaporation — a small lake near the coast won't
+            # become a humidity hole just because its area-scaled value is low.
+            source_mask = self.sea_mask
+            lake_floor  = sources.copy()
+            lake_floor[self.sea_mask] = 0.0   # sea is already hard-pinned above
 
         moisture, orog_precip = advect_moisture(
             sources, source_mask, self.lake_mask, h_m,

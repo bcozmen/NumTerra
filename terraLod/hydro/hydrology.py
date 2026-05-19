@@ -39,7 +39,8 @@ class Hydrology:
 
     def __init__(self, height_map, sea_level_percentile, init_lake_area_threshold, river_threshold,
                  min_lake_river_acc=None, infiltration_capacity=0.30, land_evap_fraction=0.30,
-                 lake_open_evap_mm=900.0, spill_erosion_depth=0.002, max_overflow_iterations=5):
+                 lake_open_evap_mm=900.0, spill_erosion_depth=0.002, max_overflow_iterations=5,
+                 slope_exp=1.7):
         """
         Parameters
         ----------
@@ -71,8 +72,9 @@ class Hydrology:
         self.lake_open_evap_mm       = lake_open_evap_mm
         self.spill_erosion_depth     = spill_erosion_depth
         self.max_overflow_iterations = max_overflow_iterations
+        self.slope_exp               = slope_exp
 
-        self.mfd_weights = compute_mfd_weights(height_map)
+        self.mfd_weights = compute_mfd_weights(height_map, slope_exp)
 
         self.base_sea_mask, self.sea_level = self.init_sea()
         self.sea_interp = self.get_interpolators(self.base_sea_mask.astype(float))
@@ -108,12 +110,27 @@ class Hydrology:
             lake_open_evap_mm     = self.lake_open_evap_mm,
             spill_erosion_depth   = self.spill_erosion_depth,
             max_overflow_iterations = self.max_overflow_iterations,
+            slope_exp             = self.slope_exp,
         )
 
         self.water_acc      = water_acc
-        self.lake_mask      = lake_mask
+        self.base_lake_mask      = lake_mask
         self.lake_level     = lake_level
         self.height_map_out = height_map_out
+
+        # Continuous river field — stored in log space for smooth interpolation.
+        # log1p compresses the huge dynamic range of flow accumulation so that
+        # bilinear/cubic interpolation at arbitrary zoom levels stays well-behaved.
+        # At query time: interpolate log_acc → expm1 → threshold.
+        log_acc = np.log1p(water_acc).astype(np.float32)
+        self.log_acc_max   = float(log_acc.max()) + 1e-9
+        log_acc_norm       = log_acc / self.log_acc_max   # [0, 1]
+        self.river_interp  = self.get_interpolators(log_acc_norm)
+
+        # Lake: interpolate the fill-level surface so get_lake_mask can compare
+        # against the zoomed height map — same physics as sea_mask but per-lake.
+        lake_level_interp_map = lake_level.copy()
+        self.lake_level_interp = self.get_interpolators(lake_level_interp_map)
 
         return self.height_map_out
 
@@ -148,23 +165,75 @@ class Hydrology:
         sea_true = height_map < self.sea_level
         final_sea_mask = sea_true & valid_region
         return final_sea_mask.astype(bool)
-    def get_lake_mask(self, height_map, pts):
-        lake_mask = self.lake_interp(pts).reshape(height_map.shape)
-        lake_mask = lake_mask > 0
-        valid_region = lake_mask | binary_dilation(lake_mask, iterations=10)
 
-        #for each lake, use the fill level to determine actual boundary of the lake
-        
-        return lake_mask.astype(bool)
+    def get_lake_mask(self, height_map, pts):
+        """
+        Zoom-aware lake mask.
+
+        Interpolates the base-resolution fill-level surface to the query
+        resolution, then marks a cell as lake when:
+          1. It falls within the dilated footprint of a base-resolution lake, AND
+          2. The zoomed height_map is below the interpolated fill level.
+
+        This gives the same sharp lake boundaries as get_sea_mask — correct
+        at any zoom without re-running the simulation.
+        """
+        fill_level = self.lake_level_interp(pts).reshape(height_map.shape)
+        lake_prior = fill_level > 0
+        valid_region = lake_prior | binary_dilation(lake_prior, iterations=10)
+
+        lake_true = (height_map < fill_level) & (fill_level > 0)
+        return (lake_true & valid_region).astype(bool)
+
+    def get_river_field(self, height_map, pts, sea_mask, lake_mask, river_threshold_norm=None):
+        """
+        Continuous river accumulation field at arbitrary zoom / resolution.
+
+        Returns
+        -------
+        river_acc : (R,C) float32
+            Physical accumulation (expm1 of the normalised log field).
+            Use this for rendering river width / colour ramps.
+        river_mask : (R,C) bool
+            True where river_acc exceeds ``river_threshold_norm`` (a fraction
+            of the max log-accumulation, default 0.15).  Rivers are excluded
+            from sea and lake cells.
+
+        How width scales with zoom
+        --------------------------
+        ``river_acc`` is a smooth continuous field.  At low zoom a river is
+        1-2 pixels wide; at 4× zoom the same physical river spans 4-8 pixels
+        because the field is sampled at higher density.  The threshold stays
+        fixed in normalised log space so the *physical* river width is
+        resolution-independent.
+        """
+        if river_threshold_norm is None:
+            river_threshold_norm = 0.65   # tune: lower = more/thinner rivers
+
+        log_acc_norm = self.river_interp(pts).reshape(height_map.shape)
+        #pring percentiles of log_acc_norm to check that river_threshold_norm is in a good range
+        for p in [50, 75, 90, 95, 99]:
+            print(f"River accumulation percentile {p}: {np.percentile(log_acc_norm, p)}")
+        river_acc    = np.expm1(log_acc_norm * self.log_acc_max).astype(np.float32)
+
+        river_mask = (log_acc_norm > river_threshold_norm) & ~sea_mask & ~lake_mask
+
+        return river_acc, river_mask.astype(bool)
+
     def get_masks(self, height_map, grid):
         X, Y = grid
         pts = np.stack([X.flatten(), Y.flatten()], axis=-1)
-        
-        sea_mask = self.get_sea_mask(height_map, pts)
+
+        sea_mask  = self.get_sea_mask(height_map, pts)
+        lake_mask = self.get_lake_mask(height_map, pts) 
+        river_acc, river_mask = self.get_river_field(height_map, pts, sea_mask, lake_mask) 
 
         return {
-            "sea_mask": sea_mask,
-            "sea_level": self.sea_level,
+            "sea_mask":   sea_mask,
+            "lake_mask":  lake_mask,
+            "river_acc":  river_acc,
+            "river_mask": river_mask,
+            "sea_level":  self.sea_level,
         }
 
 
