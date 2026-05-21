@@ -26,26 +26,24 @@ def advect_numba(humidity, speed_i, speed_j, max_advection_cells):
     ----------
     humidity            : (H, W) float64
     speed_i / speed_j   : (H, W) float64  – wind speed in grid-cells / second
-    max_advection_cells : float            – max displacement per step (per cell)
+    max_advection_cells : float            – max displacement per step
 
     Returns
     -------
     (H, W) float64 – advected humidity field
-
-    Notes
-    -----
-    Displacement is clamped **per cell** rather than via a global effective dt.
-    A global dt would be throttled by the single windiest cell on the map,
-    making moisture transport stagnant everywhere else.  Per-cell clamping
-    lets fast jets advect at full speed while calm regions still transport
-    moisture at their natural rate.
-
-    ``np.floor`` is used instead of ``int()`` for the bilinear base index so
-    that small negative coordinates (possible before the reflect clamp fully
-    settles) round toward −∞ rather than toward zero, keeping di/dj ∈ [0, 1).
     """
     H, W = humidity.shape
     out = np.empty((H, W), dtype=np.float64)
+
+    # max wind speed (grid cells / s) — reduction loop before parallel section
+    max_speed = 1e-8
+    for i in range(H):
+        for j in range(W):
+            s = (speed_i[i, j] ** 2 + speed_j[i, j] ** 2) ** 0.5
+            if s > max_speed:
+                max_speed = s
+
+    eff_dt = max_advection_cells / max_speed   # seconds
 
     Hi = H - 1
     Wi = W - 1
@@ -54,18 +52,8 @@ def advect_numba(humidity, speed_i, speed_j, max_advection_cells):
 
     for i in prange(H):
         for j in range(W):
-            # Per-cell clamping: scale the displacement vector so its magnitude
-            # never exceeds max_advection_cells, without touching other cells.
-            disp_i = speed_i[i, j]
-            disp_j = speed_j[i, j]
-            mag = (disp_i ** 2 + disp_j ** 2) ** 0.5
-            if mag > max_advection_cells:
-                scale  = max_advection_cells / mag
-                disp_i *= scale
-                disp_j *= scale
-
-            fi = i - disp_i
-            fj = j - disp_j
+            fi = i - speed_i[i, j] * eff_dt
+            fj = j - speed_j[i, j] * eff_dt
 
             # --- reflect boundary (scipy 'reflect' / half-sample symmetric) ---
             if period_i > 0.0:
@@ -82,9 +70,9 @@ def advect_numba(humidity, speed_i, speed_j, max_advection_cells):
                 if fj > Wi:
                     fj = period_j - fj
 
-            # bilinear weights — floor is correct for negative coords
-            i0 = int(np.floor(fi))
-            j0 = int(np.floor(fj))
+            # bilinear weights
+            i0 = int(fi)
+            j0 = int(fj)
             i1 = i0 + 1
             j1 = j0 + 1
             if i1 > Hi:
@@ -192,32 +180,29 @@ def compute_rain_and_update_numba(
 
     Steps merged
     ------------
-    1. humidity += evap_frac * cap                  (atmospheric evaporation)
-    2. Soil evaporation returned to air (before rain so it can rain out)
-    3. Compute saturation rain and orographic rain, scaled by itcz_factor
-    4. humidity -= rain_delta
-    5. Föhn rain-shadow: excess humidity converted to precipitation (mass-conserving)
-    6. Soil moisture update (absorb precip, track runoff overflow)
-    7. Accumulate precipitation
+    1. humidity += evap_frac * cap          (evaporation already computed)
+    2. Compute saturation rain and orographic rain, scaled by itcz_factor
+    3. humidity -= rain_delta
+    4. Föhn rain-shadow: cap humidity on leeward side (descending warm dry air)
+    5. Soil moisture update (rain_to_soil, soil_evap above wilting_point → air)
+    6. Accumulate precipitation
 
     Parameters
     ----------
     itcz_factor          : (H, W) float64  – ≥1 at equator, <1 at ±30° horse lats
     rain_shadow_fraction : float           – max RH fraction allowed on leeward side
-    wilting_point        : float           – soil fraction below which ET ramps to 0
+    wilting_point        : float           – min soil fraction before ET stops
 
     Returns
     -------
     new_humidity  (H, W)
     new_soil      (H, W)
     new_rain      (H, W)  – cumulative rain_accum + this step's precip
-    new_runoff    (H, W)  – per-step soil overflow (mm) for hydrology systems
     """
     H, W = humidity.shape
     new_humidity = np.empty((H, W), dtype=np.float64)
     new_soil     = np.empty((H, W), dtype=np.float64)
     new_rain     = np.empty((H, W), dtype=np.float64)
-    new_runoff   = np.empty((H, W), dtype=np.float64)
 
     for i in prange(H):
         for j in range(W):
@@ -230,36 +215,16 @@ def compute_rain_and_update_numba(
             cap  = humidity_cap[i, j]
             itcz = itcz_factor[i, j]
 
-            # --- step 1: atmospheric evaporation ---
+            # --- step 1: add evaporation ---
             h = humidity[i, j] + evap_frac[i, j] * cap
 
-            # --- step 2: soil evaporation returns to air BEFORE rain ---
-            # Moving this before the rain calculation means soil moisture can
-            # contribute to saturation and rain out in the same step, avoiding
-            # a one-iteration lag in hot/wet climates that causes "pulsing."
-            s = soil_moisture[i, j]
-            soil_evap = 0.0
-            if is_land:
-                soil_frac = s / (soil_capacity + 1e-8)
-                # Linear ramp from 0 at wilting_point to full rate above
-                # 2×wilting_point.  Avoids the discontinuous step artifact
-                # that causes artificial dry patches at the wilting threshold.
-                if soil_frac <= wilting_point:
-                    soil_evap = 0.0
-                elif soil_frac < 2.0 * wilting_point:
-                    ramp      = (soil_frac - wilting_point) / (wilting_point + 1e-8)
-                    soil_evap = s * soil_evap_rate * ramp
-                else:
-                    soil_evap = s * soil_evap_rate
-                h += soil_evap
-
-            # --- step 3a: saturation rain (ITCZ-weighted condensation) ---
+            # --- step 2a: saturation rain (ITCZ-weighted condensation) ---
             excess   = h - cap
             if excess < 0.0:
                 excess = 0.0
             rain_sat = excess * condensation_rate * itcz
 
-            # --- step 3b: orographic rain (tanh uplift, ITCZ-weighted) ---
+            # --- step 2b: orographic rain (tanh uplift, ITCZ-weighted) ---
             ws = (wind_i[i, j] ** 2 + wind_j[i, j] ** 2) ** 0.5 + 1e-8
             wx = wind_i[i, j] / ws
             wy = wind_j[i, j] / ws
@@ -276,38 +241,38 @@ def compute_rain_and_update_numba(
             else:
                 rain_oro = t * 0.5 * h * orographic_factor    # leeward (no ITCZ on drying)
 
-            # --- step 4: humidity budget ---
+            # --- step 3: humidity budget ---
             precip         = rain_sat + (rain_oro if rain_oro > 0.0 else 0.0)
             humidity_delta = rain_sat + rain_oro
             h -= humidity_delta
             if h < 0.0:
                 h = 0.0
 
-            # --- step 5: föhn rain-shadow (mass-conserving) ---
-            # On leeward side (t < 0) descending air warms adiabatically.
-            # Instead of silently deleting the excess humidity, convert it to
-            # precipitation at the ridge so water mass is conserved.
+            # --- step 4: föhn rain-shadow cap ---
+            # On leeward side (t < 0) descending air warms adiabatically, raising
+            # saturation capacity. The net effect is sharply lower relative humidity.
+            # We approximate by capping h to rain_shadow_fraction * capacity.
             if t < 0.0:
                 shadow_cap = rain_shadow_fraction * cap
                 if h > shadow_cap:
-                    shadow_rain = h - shadow_cap
-                    precip += shadow_rain   # counts as orographic ridge rain
                     h = shadow_cap
 
-            # --- step 6: soil moisture + runoff ---
-            runoff = 0.0
+            # --- step 5: soil moisture ---
+            s = soil_moisture[i, j]
             if is_land:
-                s_new = s + precip - soil_evap
-                if s_new < 0.0:
-                    s_new = 0.0
-                if s_new > soil_capacity:
-                    runoff = s_new - soil_capacity   # overflow → river/hydrology
-                    s_new  = soil_capacity
-                s = s_new
+                # Return moisture from soil to air only above the wilting point.
+                soil_frac = s / (soil_capacity + 1e-8)
+                if soil_frac > wilting_point:
+                    soil_evap = s * soil_evap_rate
+                else:
+                    soil_evap = 0.0
+                s = s + precip - soil_evap
+                if s < 0.0: s = 0.0
+                if s > soil_capacity: s = soil_capacity
+                h += soil_evap   # soil evap returns to atmosphere
 
             new_humidity[i, j] = h
             new_soil[i, j]     = s
             new_rain[i, j]     = rain_accum[i, j] + precip
-            new_runoff[i, j]   = runoff
 
-    return new_humidity, new_soil, new_rain, new_runoff
+    return new_humidity, new_soil, new_rain

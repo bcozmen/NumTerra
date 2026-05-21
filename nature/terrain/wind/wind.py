@@ -62,10 +62,10 @@ class Wind:
         terrain_x /= Hmag
         terrain_y /= Hmag
 
-        # terrain_y = dot * dHdi   → meridional (i/row) component
-        # terrain_x = dot * (-dHdj) → zonal      (j/col) component
-        u = -self.config.temp_strength * dTdi + self.config.terrain_strength * terrain_y
-        v = -self.config.temp_strength * dTdj + self.config.terrain_strength * terrain_x
+        # terrain_x = dot * (-dHdj) → i-component of CCW-rotated gradient = meridional deflection
+        # terrain_y = dot *   dHdi  → j-component of CCW-rotated gradient = zonal deflection
+        u = -self.config.temp_strength * dTdi + self.config.terrain_strength * terrain_x
+        v = -self.config.temp_strength * dTdj + self.config.terrain_strength * terrain_y
 
         # Add latitude-dependent global circulation (three-cell model)
         prevailing = get_prevailing_wind(self.worldConfig, lat_rows)

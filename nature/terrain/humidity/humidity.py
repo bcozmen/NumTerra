@@ -79,18 +79,16 @@ class Humidity:
             self.generate(area)
     @timeit(label="Humidity Simulation")
     def run(self):
-        humidity_map, rain_map, soil_map, runoff_map = self.init_humidity_map()
+        humidity_map, rain_map, soil_map = self.init_humidity_map()
         self.worldConfig["humidity"]      = FastInterpolator(humidity_map, order=1) 
         self.worldConfig["rain"]          = FastInterpolator(rain_map,     order=1)
         self.worldConfig["soil_moisture"] = FastInterpolator(soil_map,     order=1)
-        self.worldConfig["runoff"]        = FastInterpolator(runoff_map,   order=1)
     @timeit(label="Humidity Generation")
     def generate(self, area):
         grid, points, size = area.grid, area.points, area.size
         area["humidity"]      = self.worldConfig["humidity"](points).reshape(size)
         area["rain"]          = self.worldConfig["rain"](points).reshape(size)
         area["soil_moisture"] = self.worldConfig["soil_moisture"](points).reshape(size)
-        area["runoff"]        = self.worldConfig["runoff"](points).reshape(size)
 
     # ------------------------------------------------------------------ helpers
 
@@ -172,8 +170,6 @@ class Humidity:
             # (mm/year) is the OUTPUT of the previous outer iteration and is NOT fed
             # back into the physics loop (rain is a cumulative output, not a state var).
             "rain":          zero_float.copy(),
-            # Runoff accumulates per-step soil overflow for the hydrology system.
-            "runoff":        zero_float.copy(),
         }
 
     # ----------------------------------------------------------------- main loop
@@ -207,24 +203,15 @@ class Humidity:
             dtype=np.float64,
         )
 
-        # ------------------------------------------------------------------
-        # Pre-convert static (loop-invariant) arrays once so the repeated
-        # np.ascontiguousarray calls inside the loop don't copy on every iter.
-        # ------------------------------------------------------------------
-        temperature_c  = np.ascontiguousarray(maps["temperature"],  dtype=np.float64)
-        sun_c          = np.ascontiguousarray(maps["sun"],          dtype=np.float64)
-        sea_mask_c     = np.ascontiguousarray(maps["sea_mask"],     dtype=np.bool_)
-        lake_mask_c    = np.ascontiguousarray(maps["lake_mask"],    dtype=np.bool_)
-        river_mask_c   = np.ascontiguousarray(maps["river_mask"],   dtype=np.bool_)
-        grad_i_c       = np.ascontiguousarray(maps["grad_i"],       dtype=np.float64)
-        grad_j_c       = np.ascontiguousarray(maps["grad_j"],       dtype=np.float64)
-
         for _ in range(cfg.iterations):
             # 1. Evaporation
             evap_frac = compute_evaporation_numba(
-                temperature_c, sun_c,
+                np.ascontiguousarray(maps["temperature"],   dtype=np.float64),
+                np.ascontiguousarray(maps["sun"],           dtype=np.float64),
                 wind_i, wind_j,
-                sea_mask_c, lake_mask_c, river_mask_c,
+                np.ascontiguousarray(maps["sea_mask"],      dtype=np.bool_),
+                np.ascontiguousarray(maps["lake_mask"],     dtype=np.bool_),
+                np.ascontiguousarray(maps["river_mask"],    dtype=np.bool_),
                 np.ascontiguousarray(maps["soil_moisture"], dtype=np.float64),
                 cfg.evaporation_rate,
                 cfg.land_evaporation, cfg.sea_evaporation,
@@ -242,15 +229,20 @@ class Humidity:
             # 3. Saturation rain + orographic rain + budget + soil — single fused pass.
             #    Diffusion is intentionally applied AFTER this step so the orographic
             #    moisture gradient (windward wet / leeward dry) is not pre-blurred.
-            humidity_cap = humidity_capacity_numba(temperature_c)
-            maps["humidity"], maps["soil_moisture"], maps["rain"], maps["runoff"] = (
+            humidity_cap = humidity_capacity_numba(
+                np.ascontiguousarray(maps["temperature"], dtype=np.float64)
+            )
+            maps["humidity"], maps["soil_moisture"], maps["rain"] = (
                 compute_rain_and_update_numba(
                     np.ascontiguousarray(maps["humidity"],      dtype=np.float64),
                     humidity_cap,
                     evap_frac,
                     wind_i, wind_j,
-                    grad_i_c, grad_j_c,
-                    sea_mask_c, lake_mask_c, river_mask_c,
+                    np.ascontiguousarray(maps["grad_i"],        dtype=np.float64),
+                    np.ascontiguousarray(maps["grad_j"],        dtype=np.float64),
+                    np.ascontiguousarray(maps["sea_mask"],      dtype=np.bool_),
+                    np.ascontiguousarray(maps["lake_mask"],     dtype=np.bool_),
+                    np.ascontiguousarray(maps["river_mask"],    dtype=np.bool_),
                     np.ascontiguousarray(maps["soil_moisture"], dtype=np.float64),
                     np.ascontiguousarray(maps["rain"],          dtype=np.float64),
                     cfg.condensation_rate,
@@ -272,7 +264,7 @@ class Humidity:
         if raw_max > 1e-8:
             maps["rain"] = maps["rain"] / raw_max * cfg.max_rain
 
-        return maps["humidity"], maps["rain"], maps["soil_moisture"], maps["runoff"]
+        return maps["humidity"], maps["rain"], maps["soil_moisture"]
 
 
 # ============================================================ physics functions
