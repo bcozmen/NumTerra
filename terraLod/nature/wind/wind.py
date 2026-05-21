@@ -2,8 +2,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
-from utils import timeit
-from utils.functions import FastInterpolator
+from terraLod.utils import timeit, FastInterpolator
 
 from .helper import get_lat_grid, get_prevailing_wind, apply_coriolis
 

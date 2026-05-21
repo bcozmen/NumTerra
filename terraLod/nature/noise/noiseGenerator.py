@@ -3,9 +3,7 @@ import numpy as np
 
 from .noise_params import macro_params, micro_params, ds_params
 
-from utils.noise import domain_warp, fbm, diamond_square
-from utils.functions import normalize
-from utils.timer import timeit
+from terraLod.utils import domain_warp, fbm, diamond_square, normalize, timeit
 
 @dataclass
 class NoiseConfig:

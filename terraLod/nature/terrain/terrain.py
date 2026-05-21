@@ -1,10 +1,10 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter, binary_dilation
 
-from utils.functions import normalize, get_grid, FastInterpolator
-from utils.timer import timeit
+from terraLod.utils import normalize, get_grid, FastInterpolator, timeit
 
-from .noise import NoiseGenerator
+
+from ..noise.noiseGenerator import NoiseGenerator
 from .numba import detect_sea
 
 

@@ -34,8 +34,7 @@ Fill-spill-incise mechanism
 from dataclasses import dataclass
 import numpy as np
 
-from utils.functions import FastInterpolator
-from utils import timeit
+from terraLod.utils import FastInterpolator, timeit
 
 from .numba import (
     compute_mfd_weights,

@@ -9,7 +9,7 @@ from matplotlib.colors import Normalize, LogNorm, PowerNorm, LinearSegmentedColo
 from matplotlib.ticker import LogFormatterMathtext, LogLocator
 
 
-from utils import timeit
+from terraLod.utils import timeit
 
 
 @dataclass

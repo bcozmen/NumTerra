@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.ndimage import distance_transform_edt
-from utils import normalize
+from terraLod.utils import normalize
 
 def get_temperature_grid(size, max_size, latitude, decl) -> np.ndarray:
     rows, cols = size

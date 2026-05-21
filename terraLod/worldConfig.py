@@ -4,11 +4,11 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from abc import ABC, abstractmethod
 
-from utils.functions import get_grid, get_slope, FastInterpolator, get_cell_size
+from terraLod.utils import get_grid, get_slope, FastInterpolator, get_cell_size
 import matplotlib.pyplot as plt
 
-from .terrain import Terrain, Thermal, Wind, Humidity,  Hydro
-from .plotter import Plotter
+from terraLod.nature import Terrain, Thermal, Wind, Humidity,  Hydro
+from terraLod import Plotter
 @dataclass
 class WorldConfig:
     size_exponent: int = 9
@@ -89,13 +89,21 @@ class World:
         self.points = np.stack(self.grid, axis=-1).reshape(-1, 2)
         self.maps = {}
         self.models = {}
-        self.init_maps()
+        self._init_maps()
 
         for model in self.worldConfig.init_models + self.worldConfig.iterative_models + [self.worldConfig.plotter]:
             model(self)
 
         self.time = Time(self)
-    def init_maps(self):
+
+    def plot(self, keys = None, **kwargs):
+        plotter = self['model_plotter']
+        if keys is None:
+            plotter.plot_all(**kwargs)
+        else:
+            plotter.plot(keys, **kwargs)
+
+    def _init_maps(self):
         if not self.whole_world:
             for model in self.worldConfig.models.values():
                 model(self)

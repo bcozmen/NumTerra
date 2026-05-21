@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 import numpy as np
 from .helper import get_temperature_grid, get_water_cooling, get_sun_heating
-from utils.functions import FastInterpolator
-from utils import timeit
+
+from terraLod.utils import FastInterpolator, timeit
 
 
 #TODO -

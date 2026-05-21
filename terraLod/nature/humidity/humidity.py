@@ -2,8 +2,7 @@ from scipy.ndimage import gaussian_filter
 from dataclasses import dataclass
 import numpy as np
 
-from utils.functions import FastInterpolator
-from utils import timeit
+from terraLod.utils import FastInterpolator, timeit
 from ..wind.helper import get_lat_grid
 from .numba import (
     advect_numba,
