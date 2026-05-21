@@ -49,13 +49,6 @@ class Thermal:
         self.worldConfig = worldConfig
         self.worldConfig["model_thermal"] = self
 
-        sqrt2 = np.sqrt(2)
-        self.metric = np.asarray(
-            [[sqrt2, 1, sqrt2],
-             [1, 0, 1],
-             [sqrt2, 1, sqrt2]]
-        )
-
         self.run()
         
     
@@ -81,7 +74,7 @@ class Thermal:
         altitude = self.worldConfig["height"]() * self.worldConfig.max_altitude
         altitude_effect = (altitude / 1000) * self.config.lapse_rate
 
-        water_cooling_effect, continentality = get_water_cooling(self.worldConfig, self.config, self.metric)
+        water_cooling_effect, continentality = get_water_cooling(self.worldConfig, self.config)
 
         sun = get_sun_heating(self.worldConfig, self.config) 
         sun_heating = self.config.cooling_effects['sun'][0] * sun

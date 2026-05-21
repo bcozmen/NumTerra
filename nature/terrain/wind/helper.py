@@ -61,9 +61,9 @@ def apply_coriolis(config, u, v, lat_rows):
     """
     lat_rad = np.radians(lat_rows)   # (rows,)  — 1-D, no broadcasting needed here
     u_new, v_new = apply_coriolis_numba(
-        np.ascontiguousarray(u, dtype=np.float64),
-        np.ascontiguousarray(v, dtype=np.float64),
-        np.ascontiguousarray(lat_rad, dtype=np.float64),
+        np.require(u,       dtype=np.float64, requirements='C'),
+        np.require(v,       dtype=np.float64, requirements='C'),
+        np.require(lat_rad, dtype=np.float64, requirements='C'),
         config.coriolis_fraction,
     )
     return u_new, v_new

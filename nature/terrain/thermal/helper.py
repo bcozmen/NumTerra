@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.ndimage import distance_transform_cdt
+from scipy.ndimage import distance_transform_edt
 
 
 def get_temperature_grid(size, max_size, latitude) -> np.ndarray:
@@ -42,14 +42,13 @@ def get_water_masks(worldConfig):
         lake_mask = np.full(sea_mask.shape, False, dtype=bool)
     return sea_mask, river_mask, lake_mask
 
-def get_water_cooling(worldConfig, config, metric):
+def get_water_cooling(worldConfig, config):
     #mask true = water, false = land
     masks = get_water_masks(worldConfig)
     cooling_effect = np.zeros(masks[0].shape) # initialize cooling effect map
     continentality = np.zeros(masks[0].shape) # placeholder for future continentality effect
     for mask, key in zip(masks, ['sea', 'river', 'lake']):
-        distance = distance_transform_cdt(~mask, metric=metric) * worldConfig.cell_size[0] # convert to meters
-        distance = distance / 3
+        distance = distance_transform_edt(~mask) * worldConfig.cell_size[0] # exact Euclidean distance in meters
         cooling_effect += config.cooling_effects[key][0] * np.exp(-distance / config.cooling_effects[key][1])
         if key == 'sea':
             continentality += config.cooling_effects['continentality'][0] * ( 1 - np.exp( -distance / config.cooling_effects['continentality'][1]))
@@ -85,22 +84,27 @@ def get_water_cooling(worldConfig, config, metric):
 
 def get_sun_heating(worldConfig, config):
     di, dj = worldConfig["grad_i"](), worldConfig["grad_j"]()
-    
-    # aspect: terrain-facing direction. grad_i = dH/d(row) ~ north component,
-    # grad_j = dH/d(col) ~ east component. Both are m/m (dimensionless slope).
-    aspect = np.arctan2(-dj, -di)          # radians; 0=N, π/2=E, π=S
-    aspect = (aspect + 2 * np.pi) % (2 * np.pi)
 
-    slope = worldConfig["slope"]()    # radians (from get_slope)
+    # Build terrain normal vector directly from gradients — avoids an
+    # aspect/slope round-trip that can mis-assign axes.
+    # Convention: row index increases southward, col index increases eastward.
+    #   di = dH/d(row) → positive = terrain slopes downward toward South
+    #   dj = dH/d(col) → positive = terrain slopes downward toward East
+    # The outward normal of the surface therefore points:
+    #   East component  : -dj  (terrain rising eastward → normal tilts East)
+    #   North component : -di  (terrain rising northward → normal tilts North)
+    #   Up component    :  1   (base upward component before normalisation)
+    nx = -dj
+    ny = -di
+    nz = np.ones_like(nx)
 
-    # terrain normal vector (uses radians correctly)
-    nx = np.sin(slope) * np.cos(aspect)
-    ny = np.sin(slope) * np.sin(aspect)
-    nz = np.cos(slope)
+    norm = np.sqrt(nx**2 + ny**2 + nz**2)
+    nx /= norm
+    ny /= norm
+    nz /= norm
 
     lat = np.radians(worldConfig.latitude)
-    
-    
+
     declination = np.radians(config.season_to_declination[worldConfig.season])
     hour_angle = np.radians(15 * (worldConfig.hour - 12))
 
@@ -109,14 +113,20 @@ def get_sun_heating(worldConfig, config):
         np.cos(lat) * np.cos(declination) * np.cos(hour_angle)
     )
 
+    # Standard astronomical azimuth: 0 = North, π/2 = East, π = South, 3π/2 = West
     solar_azimuth = np.arctan2(
         -np.cos(declination) * np.sin(hour_angle),
         np.cos(lat) * np.sin(declination) - np.sin(lat) * np.cos(declination) * np.cos(hour_angle)
     )
 
-    sx = np.cos(solar_altitude) * np.cos(solar_azimuth)
-    sy = np.cos(solar_altitude) * np.sin(solar_azimuth)
-    sz = np.sin(solar_altitude)
+    # Solar direction vector in (East, North, Up) coordinates — must match the
+    # terrain normal convention above.
+    #   Eastward  : sin(azimuth)   (azimuth 0=N → sin(0)=0, azimuth π/2=E → sin=1)
+    #   Northward : cos(azimuth)   (azimuth 0=N → cos(0)=1)
+    #   Upward    : sin(altitude)
+    sx = np.cos(solar_altitude) * np.sin(solar_azimuth)   # East
+    sy = np.cos(solar_altitude) * np.cos(solar_azimuth)   # North
+    sz = np.sin(solar_altitude)                            # Up
 
     sun = np.clip(nx * sx + ny * sy + nz * sz, 0, 1)
     return sun

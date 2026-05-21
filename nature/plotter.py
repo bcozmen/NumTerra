@@ -56,6 +56,7 @@ def _default_layer_specs() -> dict[str, LayerSpec]:
         "humidity":      LayerSpec(unit="hPa",      cmap="Blues",   vrange=(0, 60),      wind_cmap="autumn",  auto_range=True),
         "rain":          LayerSpec(unit="mm/yr",    cmap="Blues",   vrange=(0, 2000),    wind_cmap="autumn",  auto_range=True),
         "soil_moisture": LayerSpec(unit="mm",       cmap="Greens",  vrange=(0, 200),     wind_cmap="YlOrRd",  auto_range=True),
+        "runoff":        LayerSpec(unit="mm/step",  cmap="YlGnBu",  vrange=(0, 50),      wind_cmap="autumn",  auto_range=True),
         "wind":          LayerSpec(unit="m/s",      cmap="cool",    vrange=(-25, 25),    wind_cmap="Reds"),
     }
 
