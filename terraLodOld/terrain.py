@@ -4,14 +4,15 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import gaussian_filter
 
-from .helper import normalize, get_grid, scale_erosion_params, scale_hydro_params
+from utils import normalize, get_grid, get_interpolator
+
+from .helper import scale_erosion_params, scale_hydro_params
 from .noise import diamond_square, domain_warp, fbm
 from .erosion import hydraulic_erosion, thermal_erosion, air_erosion
-from .hydro import Hydrology
+
 from .plotter import Plotter
-from .climate.climate import Climate
-
-
+from .hydro import Hydrology
+from .climate import Climate
 
 
 
@@ -76,6 +77,8 @@ class Terrain():
         
         combined = ds_base * np.exp(self.world_params['noise_exp_factor'] * combined_noise)
         combined = normalize(combined)
+
+        self.plotter.plot(combined, lim=(0, 1, 0, 1), plot_slope_histogram=True, shade=False)
         
         eroded = self.erode(combined)
 
@@ -83,30 +86,26 @@ class Terrain():
         eroded = normalize(eroded)
 
         self.hydro = self.init_hydro(eroded)
-        self.climate = self.init_climate(eroded, self.hydro)
-        eroded = self.hydro.run(self.climate)
-        self.climate.run(init_run =False)
+        self.climate = self.init_climate(eroded)
+        #eroded = self.hydro.run(self.climate)
+        #self.climate.run(init_run =False)
 
 
         self.base_map = eroded
-        self.base_interpolator = self.get_interpolator(eroded)
+        self.base_interpolator = get_interpolator(eroded, bounds_error=False, fill_value=None, method='cubic')
 
     def init_hydro(self, height_map):
-        hydro_params = self.world_params['hydrology_params']
-        hydro_params = scale_hydro_params(self.world_params)
-        hydro = Hydrology(height_map, **hydro_params)
-
-        mask = {
-            "sea_mask": hydro.base_sea_mask,
-            "lake_mask": hydro.base_lake_mask,
+        hydro = Hydrology(height_map, self.world_params)
+        masks = {
+            'sea_mask' : hydro.maps.get('sea_mask', None),
+            'sea_level': hydro.maps.get('sea_level', None),
         }
-        self.plotter.plot(height_map, masks=mask, plot_slope_histogram=False)
+
+        self.plotter.plot(height_map, masks=masks, plot_slope_histogram=False)
         return hydro
 
-    def init_climate(self, height_map, hydro):
-        climate_params = self.world_params.get('climate_params', {})
-        climate = Climate(height_map, hydro, self.world_params, **climate_params)
-        climate.run()
+    def init_climate(self, height_map):
+        climate = Climate(height_map, self.hydro, self.world_params)
         return climate
 
     
@@ -177,10 +176,7 @@ class Terrain():
         offset = 0 if macro else 1000
         new_dict['seed'] = self.world_params['seed'] + offset + ix * 174
         return new_dict
-    def get_interpolator(self, grid):
-        x = np.linspace(0,1,self.world_params['shape'][0])
-        y = np.linspace(0,1,self.world_params['shape'][1])
-        return RegularGridInterpolator((x, y), grid, bounds_error=False, fill_value=None, method='cubic')
+
     def _init_plotter(self):
         plotter_params = self.world_params.get('plotter_params', {})
         plotter_params['max_size'] = self.world_params.get('max_size', 100000.0)

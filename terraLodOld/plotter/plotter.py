@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D 
 import numpy as np
 
-from ..helper import normalize, get_grid
+from utils import normalize, get_grid
 from .shade import get_3D_shade, hillshade
 from .helper import get_cell_size, set_labels, find_z_limits
 
@@ -407,46 +407,7 @@ class Plotter():
         plt.show()
         return ax
 
-    def _compute_gradients(self, height_map, lim):
-        """Helper: compute (dzdx, dzdy) for *height_map* given *lim*."""
-        from .helper import get_cell_size
-        z = height_map * self.max_altitude
-        cell_size, _ = get_cell_size(lim, self.max_size, height_map.shape)
-        return np.gradient(z, cell_size[0], cell_size[1])
 
-    def plot_map(self, data, title='Map', cmap='viridis', lim=(0.0, 1.0, 0.0, 1.0),
-                 save_path=None):
-        """
-        Plot any scalar 2-D map (humidity, temperature, precipitation, …)
-        as a simple imshow with a colorbar.
-
-        Parameters
-        ----------
-        data      : 2-D float array  (ij-indexed: axis 0 = X, axis 1 = Y)
-        title     : str
-        cmap      : matplotlib colormap name
-        lim       : (x0, x1, y0, y1) extent
-        save_path : optional file path to save the figure
-        """
-        # Colormap choices that look good per map type
-        _CMAP_DEFAULTS = {
-            'temperature':   'RdYlBu_r',
-            'humidity':      'YlGnBu',
-            'precipitation': 'Blues',
-        }
-        cmap = _CMAP_DEFAULTS.get(title.lower(), cmap)
-
-        fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
-        # ij → (rows=Y, cols=X), so transpose for imshow
-        im = ax.imshow(data.T, extent=lim, origin='lower', cmap=cmap,
-                       interpolation='bilinear')
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label(title)
-        set_labels(ax, z_label=None, title=title)
-        if save_path is not None:
-            plt.savefig(save_path)
-        plt.show()
-        return ax
 
     def plot_slope_histogram(self, height_map, gradients, lim=(0.0, 1.0, 0.0, 1.0), ax=None):
         if ax is None:

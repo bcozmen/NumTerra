@@ -83,14 +83,3 @@ def scale_hydro_params(world_params):
     return h_scaled
 
 
-def normalize(arr, axis = None,vmin = None, vmax = None, range = (0, 1)):
-    if vmin is None:
-        vmin = np.min(arr, axis=axis, keepdims=True)
-    if vmax is None:
-        vmax = np.max(arr, axis=axis, keepdims=True)
-    return range[0] + (arr - vmin) * (range[1] - range[0]) / (vmax - vmin + 1e-8)
-
-def get_grid(lim = (0, 1, 0, 1), shape = (2048, 2048)):
-    x = np.linspace(lim[0], lim[1], shape[0])
-    y = np.linspace(lim[2], lim[3], shape[1])
-    return np.meshgrid(x, y, indexing='ij')
