@@ -9,15 +9,13 @@ from .helper import get_lat_grid, get_prevailing_wind, apply_coriolis
 
 @dataclass
 class WindConfig:
-    temp_strength:      float = 1.0
-    terrain_strength:   float = 1.5
-    # Global circulation (Hadley / Ferrel / Polar cells) base wind [m/s equivalent weight]
-    prevailing_strength: float = 0.15
-    # Coriolis deflection fraction: 0 = none, 1 = fully geostrophic (90° rotation).
-    # At coriolis_fraction=0.4 and lat=45°N the wind is rotated ~18° rightward.
-    coriolis_fraction:  float = 0.4
-    blur_sigma:         float = 1.0
-    max_wind_speed:     float = 25.0  # m/s — output is scaled to this maximum
+    temp_strength:      float = 0.25   # How heavily temperature variations (sea breezes) drive wind. Increase for strong coastal winds. #1.0 -> 7.0m/s
+    terrain_strength:   float = 0.5   # How violently mountains block and deflect wind. Increase if wind ignores valleys. #1.0 -> 0.7m/s
+    prevailing_strength: float = 1.0 # Base planetary wind speed contribution (e.g. westerlies vs easterlies). #1.0 -> 0.1m/s max
+
+    coriolis_fraction:  float = 0.4   # The twist injected into the wind by planet rotation.
+    blur_sigma:         float = 1.0   # Smoothing applied to wind map to prevent rigid 90-degree jagged turns.
+    
 
 class Wind:
     @timeit(label="Wind Initialization")
@@ -49,31 +47,26 @@ class Wind:
         dHdj = self.worldConfig["grad_j"]()
 
         # Thermal wind: air flows down the temperature gradient (simplified pressure-gradient force)
-        Tmag = np.sqrt(dTdi**2 + dTdj**2).max() + 1e-8
-        dTdi /= Tmag   # now dimensionless, max magnitude = 1
-        dTdj /= Tmag
+        # We use a base typical temperature gradient (e.g., 0.05 C/km) to normalize things physically
+        # rather than always scaling the max gradient to 1.
+        T_typical = 0.05 / 1000.0  # 0.05 C per km in m
+        dTdi = dTdi / T_typical
+        dTdj = dTdj / T_typical
 
         # Terrain deflection: only deflect wind blowing into the slope
         dot = -dTdi * dHdi - dTdj * dHdj   # dimensionless
         terrain_x = dot * (-dHdj)
         terrain_y = dot * dHdi
 
-        Hmag = np.sqrt(terrain_x**2 + terrain_y**2).max() + 1e-8
-        terrain_x /= Hmag
-        terrain_y /= Hmag
-
-        # terrain_x = dot * (-dHdj) → i-component of CCW-rotated gradient = meridional deflection
-        # terrain_y = dot *   dHdi  → j-component of CCW-rotated gradient = zonal deflection
-        u = -self.config.temp_strength * dTdi + self.config.terrain_strength * terrain_x
-        v = -self.config.temp_strength * dTdj + self.config.terrain_strength * terrain_y
-
         # Add latitude-dependent global circulation (three-cell model)
         prevailing = get_prevailing_wind(self.worldConfig, lat_rows)
-        pmag = np.sqrt(prevailing[..., 0]**2 + prevailing[..., 1]**2).max() + 1e-8
-        prevailing /= pmag  # normalize to dimensionless, max magnitude = 1
-        prevailing *= self.config.prevailing_strength
-        u += prevailing[..., 0]
-        v += prevailing[..., 1]
+        # prevailing is unit vector or similarly bounded. Just use it as is.
+
+        strengths = np.asarray([self.config.temp_strength, self.config.terrain_strength, self.config.prevailing_strength])
+        strengths = strengths / np.sum(strengths)  # Normalize to sum to 1
+ 
+        u = -strengths[0] * dTdi + strengths[1] * terrain_x + strengths[2] * prevailing[..., 0] 
+        v = -strengths[0] * dTdj + strengths[1] * terrain_y + strengths[2] * prevailing[..., 1]
 
         # Apply Coriolis deflection (NH rightward, SH leftward)
         u, v = apply_coriolis(self.config, u, v, lat_rows)
@@ -82,11 +75,6 @@ class Wind:
 
         wind[..., 0] = gaussian_filter(wind[..., 0], sigma=self.config.blur_sigma)
         wind[..., 1] = gaussian_filter(wind[..., 1], sigma=self.config.blur_sigma)
-
-        # Scale so the maximum wind speed equals max_wind_speed [m/s]
-        mag = np.sqrt(wind[..., 0]**2 + wind[..., 1]**2).max() + 1e-8
-        wind *= self.config.max_wind_speed / mag
-        # Output units: m/s, range ~ [-max_wind_speed, +max_wind_speed] per component
 
         return wind
 

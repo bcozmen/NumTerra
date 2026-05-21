@@ -72,13 +72,13 @@ class HydroConfig:
     # ---- Rainfall coupling ------------------------------------------------
     # Fraction of annual rainfall (mm/yr) converted to surface runoff [m].
     # The remainder is handled by Humidity's soil-moisture model.
-    rain_to_surface: float = 0.35
+    rain_to_surface: float = 0.55   # increased from 0.35 — more runoff to sustain rivers
 
     # ---- Erosion / deposition ---------------------------------------------
     # Bedrock erodibility K [normalised height / (m²/step)].
     # erosion/step = K × discharge × slope,  capped at max_erosion_norm.
     # Increase K for faster landscape evolution (deeper canyons, wider valleys).
-    erodibility: float = 3e-4
+    erodibility: float = 3e-5
 
     # Fraction of excess-capacity sediment deposited per step.
     # Lower → sediment travels further before settling (braided rivers).
@@ -89,23 +89,24 @@ class HydroConfig:
     capacity_k: float = 0.6
 
     # Hard cap on erosion per sub-step [normalised height].
-    # 1e-4 normalised ≈ 0.30 m at max_altitude=3000 m — prevents blow-up.
-    max_erosion_norm: float = 1e-4
+    # 5e-5 normalised ≈ 0.15 m at max_altitude=3000 m — prevents blow-up.
+    max_erosion_norm: float = 1e-5
 
     # ---- Mask thresholds --------------------------------------------------
     # Percentile of land-cell discharge above which a cell is a river.
     # 97 → top 3 % of land cells carry rivers.  Tune between 90 (many streams)
     # and 99 (only major rivers).
-    river_discharge_percentile: float = 99.5
+    river_discharge_percentile: float = 97.0   # top 3 % of land cells = rivers
 
     # Absolute minimum discharge [m/step] a cell must carry to be a river.
-    # Acts as a floor on the percentile threshold — prevents near-zero-flow
-    # cells from being classified as rivers after many outer iterations.
-    # Raise this if too many rivers appear; lower if rivers disappear.
-    river_discharge_threshold: float = 0.1
+    # With max_rain=600mm/yr, rain_to_surface=0.55, iterations=10:
+    # per-cell rain/step ≈ 600*0.001*0.55/10 = 0.033 m/step
+    # A 10-cell catchment ≈ 0.033 * 10 * drain_efficiency ≈ 0.06 m/step.
+    # Threshold must be well below that to see any rivers at all.
+    river_discharge_threshold: float = 0.002   # was 0.1 — was larger than actual discharge values
 
     # Standing water depth [m] needed to classify a cell as a lake.
-    lake_depth_threshold: float = 0.05
+    lake_depth_threshold: float = 0.005   # was 0.05 — lowered to match actual water depth magnitudes
 
     # ---- Stability guard --------------------------------------------------
     # Maximum change in normalised height per world() call.

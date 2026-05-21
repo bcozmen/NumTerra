@@ -74,6 +74,11 @@ class FastInterpolator:
                 self.interp_arr = self.orig_arr
                 self.prefilter = True
 
+    def copy(self):
+        copy = FastInterpolator(self.orig_arr.copy(), order=self.order, can_call=self.can_call)
+        if self.interp_arr is not None:
+            copy.interp_arr = self.interp_arr.copy()
+        return copy
     def update(self):
         self.interp_arr = None
 

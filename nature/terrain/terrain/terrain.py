@@ -19,7 +19,6 @@ class Terrain:
         sea_mask, sea_level = self._init_sea_map()
         self.worldConfig["sea_mask"] = sea_mask
         self.worldConfig.sea_level = sea_level
-        print(f"Initialized terrain with sea level at {sea_level:.4f} (percentile {self.worldConfig.sea_level_percentile:.2%})")
 
     @timeit(label="Terrain Generation")
     def __call__(self, area):
@@ -48,7 +47,6 @@ class Terrain:
     def _init_sea_map(self):
         height = self.worldConfig["height"]()
         sea_level = np.percentile(height, self.worldConfig.sea_level_percentile * 100)
-        print(f"sea level {sea_level:.4f} at percentile {self.worldConfig.sea_level_percentile:.2%}")
         sea_mask = detect_sea(height, sea_level)
         sea_mask = FastInterpolator(sea_mask, order=0)
         return sea_mask, sea_level

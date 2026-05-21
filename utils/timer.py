@@ -16,7 +16,7 @@ class timeit:
 
             name = self.label or func.__name__
 
-            print(f"{name} took {end_time - start_time:.2f} seconds")
+            #print(f"{name} took {end_time - start_time:.2f} seconds")
 
             return result
 

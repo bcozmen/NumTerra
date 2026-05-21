@@ -6,24 +6,71 @@ from abc import ABC, abstractmethod
 
 from utils.functions import get_grid, get_slope, FastInterpolator, get_cell_size
 import matplotlib.pyplot as plt
+
+from .terrain import Terrain, Thermal, Wind, Humidity,  Hydro
+from .plotter import Plotter
 @dataclass
 class WorldConfig:
     size_exponent: int = 9
     max_altitude : float = 3000.0 #max altitude in meters
     max_size : float = 200_000.0 #world size in meters
-    latitude : float = 35 #latitude in degrees, used for temperature gradient and climate
+    
+    latitude : float = 30 #latitude in degrees, used for temperature gradient and climate
     hour : float = 14 #hour of the day, used for sun position and lighting
-    season : str = "summer" #season, used for sun position and lighting
+    
+    season : str = "spring" #season, used for sun position and lighting
+    season_to_declination: dict = field(default_factory=lambda: {
+        "spring": 10.0, "summer": 23.44, "autumn": -10.0, "winter": -23.44
+    })
 
     sea_level_percentile : float = 0.25 #percentile for sea level
     sea_level : float = None #computed sea level based on height map and percentile
     seed : int = 3563
     debug : bool = False
 
+    init_models : list = field(default_factory=lambda: [Terrain])
+    iterative_models : list = field(default_factory=lambda: [Thermal, Wind, Humidity])
+    plotter : object = Plotter
 
+    @property
+    def declination(self):
+        return np.radians(self.season_to_declination[self.season])
+
+    @property
+    def solar_vectors(self):
+        declination = self.declination
+        lat = np.radians(self.latitude)
+        hour_angle = np.radians(15.0 * (self.hour - 12.0))
+
+        solar_altitude = np.arcsin(
+            np.sin(lat) * np.sin(declination) +
+            np.cos(lat) * np.cos(declination) * np.cos(hour_angle)
+        )
+        solar_azimuth = np.arctan2(
+            -np.cos(declination) * np.sin(hour_angle),
+            np.cos(lat) * np.sin(declination) - np.sin(lat) * np.cos(declination) * np.cos(hour_angle)
+        )
+
+        sx = np.cos(solar_altitude) * np.sin(solar_azimuth)
+        sy = np.cos(solar_altitude) * np.cos(solar_azimuth)
+        sz = np.sin(solar_altitude)
+
+        return sx, sy, sz
+
+class Time():
+    seasons = ["spring", "summer", "autumn", "winter"]
+    def __init__(self, worldConfig):
+        self.worldConfig = worldConfig
+        self.current_index = self.seasons.index(worldConfig.season)
+
+    def step(self):
+
+        self.current_index = (self.current_index + 1) % len(self.seasons)
+        self.worldConfig.season = self.seasons[self.current_index]
+        self.worldConfig.worldConfig.season = self.seasons[self.current_index]
 
 class World:
-    def __init__(self, config = None, lim = (0, 1, 0, 1), size = (1024, 1024)):
+    def __init__(self, config = None, lim = (0, 1, 0, 1), size = (1024, 1024), models = [] ):
         # If config is None, we assume this is the "whole world" initialization
         self.whole_world = False  
         if config is None:
@@ -43,31 +90,25 @@ class World:
         self.maps = {}
         self.models = {}
         self.init_maps()
+
+        for model in self.worldConfig.init_models + self.worldConfig.iterative_models + [self.worldConfig.plotter]:
+            model(self)
+
+        self.time = Time(self)
     def init_maps(self):
         if not self.whole_world:
             for model in self.worldConfig.models.values():
                 model(self)
 
     def __call__(self):
-        _tracked = ['temperature', 'humidity', 'rain', 'soil_moisture']
-        _before = {k: self.maps[k]().copy() for k in _tracked if k in self.maps}
-
+        self.time.step()
         for key, model in self.models.items():
             if key == 'model_terrain': continue  # Ensure terrain runs first for slope calculations
             elif key == 'model_plotter': continue  # Plotter should run last to visualize all maps
             model()
 
-            _after = {k: self.maps[k]() for k in _tracked if k in self.maps}
-            diff = {k: np.abs(_after[k] - _before[k]) for k in _after if k in _before}
-            changed_mean = {k: d.mean() for k, d in diff.items()}
-            changed_max  = {k: d.max()  for k, d in diff.items()}
-            if any(v > 1e-6 for v in changed_mean.values()):
-                if self.worldConfig.debug:
-                    print(f"  [{key}]  " + "  ".join(
-                        f"{k}: mean={changed_mean[k]:.4f} max={changed_max[k]:.4f}"
-                        for k in changed_mean
-                    ))
-            _before = {k: _after[k].copy() for k in _after}
+        
+
 
     def __setitem__(self, key, value):
         if key.startswith("model_"):
@@ -88,9 +129,6 @@ class World:
             self.maps["slope"] = FastInterpolator(slope, order=1, can_call=can_call)
             self.maps["grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
             self.maps["grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
-            #if can_call:
-                #height = value()
-                #self.maps["mfd_weights"] = FastInterpolator(compute_mfd_weights(height, self.worldConfig.max_altitude, self.cell_size[0], self.cell_size[1]), order=1, can_call=True)
 
         if key == "temperature":
             slope, grad_i, grad_j = get_slope(value(), self.cell_size)
@@ -101,7 +139,7 @@ class World:
     def __getitem__(self, key):
         if key in self.models:
             return self.models[key]
-        return self.maps[key]
+        return self.maps[key].copy()
 
     
 
