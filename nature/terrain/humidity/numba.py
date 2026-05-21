@@ -283,15 +283,15 @@ def compute_rain_and_update_numba(
             if h < 0.0:
                 h = 0.0
 
-            # --- step 5: föhn rain-shadow (mass-conserving) ---
-            # On leeward side (t < 0) descending air warms adiabatically.
-            # Instead of silently deleting the excess humidity, convert it to
-            # precipitation at the ridge so water mass is conserved.
+            # --- step 5: föhn rain-shadow ---
+            # On the leeward side (t < 0) the air descended and warmed
+            # adiabatically; relative humidity drops, no new precipitation
+            # forms.  The water was already deposited on the windward side
+            # (captured by rain_oro when t > 0 on the upwind cell).
+            # We simply cap atmospheric humidity here — no precip increment.
             if t < 0.0:
                 shadow_cap = rain_shadow_fraction * cap
                 if h > shadow_cap:
-                    shadow_rain = h - shadow_cap
-                    precip += shadow_rain   # counts as orographic ridge rain
                     h = shadow_cap
 
             # --- step 6: soil moisture + runoff ---

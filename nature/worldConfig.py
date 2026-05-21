@@ -3,13 +3,12 @@ import numpy as np
 from dataclasses import dataclass, field
 from functools import cached_property
 from abc import ABC, abstractmethod
-from .terrain import compute_mfd_weights
 
 from utils.functions import get_grid, get_slope, FastInterpolator, get_cell_size
 import matplotlib.pyplot as plt
 @dataclass
 class WorldConfig:
-    size_exponent: int = 10
+    size_exponent: int = 9
     max_altitude : float = 3000.0 #max altitude in meters
     max_size : float = 200_000.0 #world size in meters
     latitude : float = 35 #latitude in degrees, used for temperature gradient and climate
@@ -89,9 +88,9 @@ class World:
             self.maps["slope"] = FastInterpolator(slope, order=1, can_call=can_call)
             self.maps["grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
             self.maps["grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
-            if can_call:
-                height = value()
-                self.maps["mfd_weights"] = FastInterpolator(compute_mfd_weights(height, self.worldConfig.max_altitude, self.cell_size[0], self.cell_size[1]), order=1, can_call=True)
+            #if can_call:
+                #height = value()
+                #self.maps["mfd_weights"] = FastInterpolator(compute_mfd_weights(height, self.worldConfig.max_altitude, self.cell_size[0], self.cell_size[1]), order=1, can_call=True)
 
         if key == "temperature":
             slope, grad_i, grad_j = get_slope(value(), self.cell_size)

@@ -39,12 +39,27 @@ class LayerSpec:
     auto_range: bool                        = False
     # Wind streamline colormap that contrasts well against this layer's background.
     wind_cmap:  str                         = "cool"
+    # When False, sea/lake/river cells are NOT blanked to NaN before colour-scaling.
+    # Set False for maps whose signal IS the water (water_depth, discharge, …).
+    mask_water: bool                        = True
+    # When False, the water-colour overlay (_draw_water) is skipped for this layer.
+    # Set False for maps that already visualise water data (water_depth, discharge…).
+    overlay_water: bool                     = True
     # Optional hook: fn(ax, world) for fully custom rendering.
     renderer:   Optional[Callable]          = field(default=None, repr=False)
 
     def resolve_range(self, data: np.ndarray) -> Tuple[float, float]:
         if self.auto_range:
-            return tuple(np.nanpercentile(data, [0.5, 99.5]))
+            lo, hi = np.nanpercentile(data, [0.5, 99.5])
+            # Guard: if the data has no meaningful spread (all-zero / all-NaN after
+            # masking) fall back to a unit range so imshow doesn't divide by zero
+            # and paint the entire map as NaN (the "all green" symptom).
+            if not np.isfinite(lo) or not np.isfinite(hi) or hi - lo < 1e-10:
+                finite = data[np.isfinite(data)]
+                if finite.size > 0 and finite.max() > 1e-10:
+                    return float(0.0), float(finite.max())
+                return float(self.vrange[0]), float(self.vrange[1])
+            return float(lo), float(hi)
         return self.vrange
 
 
@@ -56,8 +71,11 @@ def _default_layer_specs() -> dict[str, LayerSpec]:
         "humidity":      LayerSpec(unit="hPa",      cmap="Blues",   vrange=(0, 60),      wind_cmap="autumn",  auto_range=True),
         "rain":          LayerSpec(unit="mm/yr",    cmap="Blues",   vrange=(0, 2000),    wind_cmap="autumn",  auto_range=True),
         "soil_moisture": LayerSpec(unit="mm",       cmap="Greens",  vrange=(0, 200),     wind_cmap="YlOrRd",  auto_range=True),
-        "runoff":        LayerSpec(unit="mm/step",  cmap="YlGnBu",  vrange=(0, 50),      wind_cmap="autumn",  auto_range=True),
+        "runoff":        LayerSpec(unit="mm/step",  cmap="YlGnBu",  vrange=(0, 50),      wind_cmap="autumn",  auto_range=True, mask_water=False, overlay_water=False),
         "wind":          LayerSpec(unit="m/s",      cmap="cool",    vrange=(-25, 25),    wind_cmap="Reds"),
+        # Hydro maps — the signal IS the water, so keep water cells visible.
+        "water_depth":   LayerSpec(unit="m",        cmap="Blues",   vrange=(0, 10),      wind_cmap="autumn",  auto_range=True, mask_water=False, overlay_water=False),
+        "discharge":     LayerSpec(unit="m/step",   cmap="YlGnBu",  vrange=(0, 0.5),     wind_cmap="autumn",  auto_range=True, mask_water=False, overlay_water=False),
     }
 
 
@@ -124,7 +142,7 @@ class Plotter:
 
         # --- base image ---
         data = self._fetch(key)
-        if key != "height":  # height map should still influence colour scaling even under water
+        if key != "height" and spec.mask_water:
             data = self._make_water_cells_nan(data)
         vmin, vmax = spec.resolve_range(data)
         print(f"Plotting '{key}' with vmin={vmin:.2f}, vmax={vmax:.2f}")
@@ -143,7 +161,7 @@ class Plotter:
         if show_wind and "wind" in self.world.maps:
             self._draw_wind(ax, key)
 
-        if show_water:
+        if show_water and spec.overlay_water:
             self._draw_water(ax)
 
         # --- decorations ---
@@ -169,7 +187,7 @@ class Plotter:
     # ------------------------------------------------------------------
 
     def _fetch(self, key: str) -> np.ndarray:
-        return self.world[key]()
+        return self.world[key]().copy()  # copy to avoid mutating the stored FastInterpolator data
 
     def _height_above_sea(self) -> np.ndarray:
         h = self._fetch("height").copy()
@@ -181,13 +199,18 @@ class Plotter:
     # Overlay helpers
     # ------------------------------------------------------------------
     def _make_water_cells_nan(self, map: np.ndarray) -> np.ndarray:
-        """Set water cells to NaN so they don't affect colour scaling."""
-        map = map.copy()   # never mutate the stored orig_arr in the FastInterpolator
-        for name in WATER_COLORS:
-            mask_key = f"{name}_mask"
-            if mask_key in self.world.maps:
-                mask = self._fetch(mask_key).astype(bool)
-                map[mask] = np.nan
+        """
+        Set open-sea cells to NaN so they don't skew colour scaling.
+
+        Only the sea (ocean) is blanked — rivers and lakes are part of the
+        landscape and carry meaningful climate/terrain values.  Blanking
+        river_mask or lake_mask would destroy most of the data on maps
+        where those masks cover large fractions of the domain.
+        """
+        map = map.copy()
+        if "sea_mask" in self.world.maps:
+            sea = self._fetch("sea_mask").astype(bool)
+            map[sea] = np.nan
         return map
     def _draw_contours(self, ax: Axes, height: np.ndarray, levels: int = 10) -> None:
         contour = ax.contour(

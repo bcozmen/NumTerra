@@ -34,11 +34,11 @@ class HumidityConfig:
     sea_evaporation:    float = 1.0
     lake_evaporation:   float = 0.7
     river_evaporation:  float = 0.3
-    land_evaporation:   float = 0.05
+    land_evaporation:   float = 0.03
 
     # Soil moisture [mm]
     soil_capacity:   float = 200.0   # mm water equivalent (field capacity)
-    soil_evap_rate:  float = 0.05    # fraction of soil moisture returned to air / step
+    soil_evap_rate:  float = 0.02    # fraction of soil moisture returned to air / step
 
     # Advection uses a short effective dt so the semi-Lagrangian back-trace stays
     # within max_advection_cells grid cells per step.  Large back-traces with
@@ -51,7 +51,7 @@ class HumidityConfig:
     #   UK          ~ 600 mm/year
     #   Amazon      ~2000 mm/year
     #   Wet tropics ~3000 mm/year
-    max_rain: float = 1500.0   # mm / year
+    max_rain: float = 600.0   # mm / year
 
     # Föhn rain-shadow: on leeward side of a mountain, cap humidity to this
     # fraction of saturation to simulate descending warm dry air (adiabatic
@@ -268,9 +268,18 @@ class Humidity:
             maps["humidity"] = gaussian_filter(maps["humidity"], sigma=cfg.diffusion_sigma)
 
         # Normalise to mm/year
-        raw_max = maps["rain"].max()
+        raw_rain = maps["rain"].copy()          # raw hPa values before scaling
+        raw_max  = raw_rain.max()
         if raw_max > 1e-8:
-            maps["rain"] = maps["rain"] / raw_max * cfg.max_rain
+            scale        = cfg.max_rain / raw_max
+            maps["rain"] = raw_rain * scale
+            # Soil moisture was accumulated with precip in hPa while drain
+            # (soil_evap) was in mm.  Apply the same rain scale to the precip
+            # contribution: soil_correct = soil_raw + (rain_mm - rain_hPa).
+            maps["soil_moisture"] = np.clip(
+                maps["soil_moisture"] + (maps["rain"] - raw_rain),
+                0.0, cfg.soil_capacity,
+            )
 
         return maps["humidity"], maps["rain"], maps["soil_moisture"], maps["runoff"]
 

@@ -12,7 +12,7 @@ class WindConfig:
     temp_strength:      float = 1.0
     terrain_strength:   float = 1.5
     # Global circulation (Hadley / Ferrel / Polar cells) base wind [m/s equivalent weight]
-    prevailing_strength: float = 0.25
+    prevailing_strength: float = 0.15
     # Coriolis deflection fraction: 0 = none, 1 = fully geostrophic (90° rotation).
     # At coriolis_fraction=0.4 and lat=45°N the wind is rotated ~18° rightward.
     coriolis_fraction:  float = 0.4

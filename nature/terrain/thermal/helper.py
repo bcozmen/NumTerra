@@ -31,13 +31,13 @@ def _get_latitude_grid(rows: int, max_size: float, latitude: float) -> np.ndarra
     return lat_grid_rad[:, None]
 
 def get_water_masks(worldConfig):
-    sea_mask = worldConfig["sea_mask"]()
+    sea_mask = worldConfig["sea_mask"]().astype(bool)
     try:
-        river_mask = worldConfig["river_mask"]()
+        river_mask = worldConfig["river_mask"]().astype(bool)
     except:
         river_mask = np.full(sea_mask.shape, False, dtype=bool)
     try:
-        lake_mask = worldConfig["lake_mask"]()
+        lake_mask = worldConfig["lake_mask"]().astype(bool)
     except:
         lake_mask = np.full(sea_mask.shape, False, dtype=bool)
     return sea_mask, river_mask, lake_mask
