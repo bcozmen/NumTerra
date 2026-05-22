@@ -15,10 +15,12 @@ class Terrain:
         self.worldConfig["model_terrain"] = self
         
         self.noise_generator = NoiseGenerator(self.worldConfig.seed)
-        self.worldConfig["height"] = self._init_height_map()
-        sea_mask, sea_level = self._init_sea_map()
+        height_map = self._init_height_map()
+        sea_mask, sea_level = self._init_sea_map(height_map)
+        
         self.worldConfig["sea_mask"] = sea_mask
-        self.worldConfig.sea_level = sea_level
+        self.worldConfig["sea_level"] = sea_level
+        self.worldConfig["height"] = height_map
 
     @timeit(label="Terrain Generation")
     def __call__(self, area):
@@ -44,8 +46,8 @@ class Terrain:
 
         return height_interp
 
-    def _init_sea_map(self):
-        height = self.worldConfig["height"]()
+    def _init_sea_map(self, height_map):
+        height = height_map()
         sea_level = np.percentile(height, self.worldConfig.sea_level_percentile * 100)
         sea_mask = detect_sea(height, sea_level)
         sea_mask = FastInterpolator(sea_mask, order=0)

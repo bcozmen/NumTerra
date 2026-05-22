@@ -1,20 +1,30 @@
 import numpy as np
 from scipy.ndimage import map_coordinates, spline_filter
 
+class dummyWrapper:
+    def __init__(self,value):
+        self.value = value
+    def __call__(self):
+        return self.value
+
 class FastInterpolator:
     def __init__(self, arr, order=3, can_call=True):
         self.orig_arr = arr
         self.dtype = arr.dtype
+        if not isinstance(arr, np.ndarray):
+            arr = dummyWrapper(arr)
+
         self.interp_arr = None
 
-        self.shape = arr.shape[:2]   # always (H, W)
+        
         self.order = order
         self.can_call = can_call
         # number of channels: 1 for 2D arrays, C for (H, W, C)
-        self.n_channels = arr.shape[2] if arr.ndim == 3 else None
 
 
     def _initialize(self):
+        self.shape = self.orig_arr.shape[:2]   # always (H, W)
+        self.n_channels = self.orig_arr.shape[2] if self.orig_arr.ndim == 3 else None
         if self.n_channels is not None:
             # prefilter each channel independently
             if self.order > 1:

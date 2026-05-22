@@ -32,9 +32,57 @@ class WorldConfig:
     iterative_models : list = field(default_factory=lambda: [Thermal, Wind, Humidity])
     plotter : object = Plotter
 
+class Time():
+    seasons = ["spring", "summer", "autumn", "winter"]
+    def __init__(self, worldConfig):
+        self.worldConfig = worldConfig
+        self.current_index = self.seasons.index(worldConfig.season)
+
+    def step(self):
+        self.current_index = (self.current_index + 1) % len(self.seasons)
+        self.worldConfig.season = self.seasons[self.current_index]
+    def get_season(self):
+        return self.seasons[self.current_index]
+    def get_previous_season(self):
+        return self.seasons[(self.current_index - 1) % len(self.seasons)]
+
+class World:
+    def __init__(self, config = None, lim = (0, 1, 0, 1), size = (1024, 1024), models = [] ):
+        # If config is None, we assume this is the "whole world" initialization
+        self.whole_world = False  
+        if config is None:
+            config = WorldConfig()
+            self.whole_world = True
+            self.__dict__.update(config.__dict__)
+            lim = (0, 1, 0, 1)
+            size = (2 ** self.size_exponent + 1, 2 ** self.size_exponent + 1)
+            
+        self.worldConfig = config
+        self.lim = lim
+        self.size = size
+
+        self.cell_size = get_cell_size(self.lim, self.size, self.worldConfig.max_size)
+        self.grid = get_grid(lim = self.lim, shape=self.size)
+        self.points = np.stack(self.grid, axis=-1).reshape(-1, 2)
+        self.maps = {}
+        self.models = {}
+
+        self.time = Time(self)
+        self._init_maps()
+        
+
+        for model in self.worldConfig.init_models + self.worldConfig.iterative_models + [self.worldConfig.plotter]:
+            model(self)
+
+        
+
     @property
     def declination(self):
-        return np.radians(self.season_to_declination[self.season])
+        return np.radians(self.season_to_declination[self.time.get_season()])
+
+    @property
+    def prev_declination(self):
+        return np.radians(self.season_to_declination[self.time.get_previous_season()])
 
     @property
     def solar_vectors(self):
@@ -57,45 +105,6 @@ class WorldConfig:
 
         return sx, sy, sz
 
-class Time():
-    seasons = ["spring", "summer", "autumn", "winter"]
-    def __init__(self, worldConfig):
-        self.worldConfig = worldConfig
-        self.current_index = self.seasons.index(worldConfig.season)
-
-    def step(self):
-
-        self.current_index = (self.current_index + 1) % len(self.seasons)
-        self.worldConfig.season = self.seasons[self.current_index]
-        self.worldConfig.worldConfig.season = self.seasons[self.current_index]
-
-class World:
-    def __init__(self, config = None, lim = (0, 1, 0, 1), size = (1024, 1024), models = [] ):
-        # If config is None, we assume this is the "whole world" initialization
-        self.whole_world = False  
-        if config is None:
-            config = WorldConfig()
-            self.whole_world = True
-            self.__dict__.update(config.__dict__)
-            lim = (0, 1, 0, 1)
-            size = (2 ** self.size_exponent + 1, 2 ** self.size_exponent + 1)
-            
-        self.worldConfig = config
-        self.lim = lim
-        self.size = size
-
-        self.cell_size = get_cell_size(self.lim, self.size, self.worldConfig.max_size)
-        self.grid = get_grid(lim = self.lim, shape=self.size)
-        self.points = np.stack(self.grid, axis=-1).reshape(-1, 2)
-        self.maps = {}
-        self.models = {}
-        self._init_maps()
-
-        for model in self.worldConfig.init_models + self.worldConfig.iterative_models + [self.worldConfig.plotter]:
-            model(self)
-
-        self.time = Time(self)
-
     def plot(self, keys = None, **kwargs):
         plotter = self['model_plotter']
         if keys is None:
@@ -115,9 +124,6 @@ class World:
             elif key == 'model_plotter': continue  # Plotter should run last to visualize all maps
             model()
 
-        
-
-
     def __setitem__(self, key, value):
         if key.startswith("model_"):
             self.models[key] = value
@@ -129,17 +135,17 @@ class World:
         if isinstance(value, FastInterpolator):
             value.update() # Ensure the interpolator is initialized with the new data
         else:
-            if isinstance(value, np.ndarray):
-                value =  FastInterpolator(value, order=1, can_call=can_call)
+            value =  FastInterpolator(value, order=1, can_call=can_call)
         self.maps[key] = value
         if key == "height":
-            slope, grad_i, grad_j = get_slope(value(), self.cell_size, self.worldConfig.max_altitude)
+
+            slope, grad_i, grad_j = get_slope(value(), self["sea_level"](), self.cell_size, self.worldConfig.max_altitude)
             self.maps["slope"] = FastInterpolator(slope, order=1, can_call=can_call)
             self.maps["grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
             self.maps["grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
 
         if key == "temperature":
-            slope, grad_i, grad_j = get_slope(value(), self.cell_size)
+            slope, grad_i, grad_j = get_slope(value(), self["sea_level"](), self.cell_size, self.worldConfig.max_altitude)
             self.maps["temp_grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
             self.maps["temp_grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
 

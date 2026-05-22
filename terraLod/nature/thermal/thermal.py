@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
-from .helper import get_temperature_grid, get_water_cooling, get_sun_heating
+from .helper import get_temperature_grid, get_water_cooling, get_sun_heating, season_phase
 
 from terraLod.utils import FastInterpolator, timeit
 
@@ -8,18 +8,23 @@ from terraLod.utils import FastInterpolator, timeit
 #TODO -
 # Rain, wind, humidity, soil moisture is calculated now
 # add feedback loops
+#1. The Albedo Feedback (Snow & Ice) -> less heat absorbed
+#2. Evaporative Cooling (Soil Moisture & Vegetation)
 
 @dataclass
 class ThermalConfig:    
-    lapse_rate: float = 4.5  # °C drop per 1000m elevation. Natural physics default is 6.5. Increase to make mountains even colder.
+    lapse_rate: float = 6.5  # °C drop per 1000m elevation. Natural physics default is 6.5. Increase to make mountains even colder.
+
+    
     
     cooling_effects: dict = field(default_factory=lambda: {
-        'sea': (3.0, 150_000.0),            # (Max effect in °C, Scale in meters) How far inland sea breezes cool the land.
-        'lake': (2.0, 15_000.0),            # Localized cooling around lakes. 
-        'river': (0.3, 8_000.0),            # Minor cooling near rivers.
-        'continentality': (5.0, 50_000.0), # Extreme inland warming effect. Deeper inland = much hotter summers.
-        'sun': (3.5,)                       # Max solar heating amplitude in °C. South-facing slopes get this much hotter.
+        'sea': (5.0, 50_000.0),            # (Max effect in °C, Scale in meters) How far inland sea breezes cool the land.
+        'lake': (2.0, 5_000.0),            # Localized cooling around lakes. 
+        'river': (0.5, 1_000.0),            # Minor cooling near rivers.
+        'continentality': (0.75, 200_000.0), # % of seasonal swing added back per 200km from coast. Makes deep interiors have more extreme seasons.
+        'sun': (4.0,)                       # Max solar heating amplitude in °C. South-facing slopes get this much hotter.
     })
+    marine_drift_amplitude: float = 6.0 # Max seasonal shift in mean temperature at the coast due to ocean thermal inertia (°C).
     latent_heat_factor: float = 1.0         # How much °C the air warms when heavy rain falls (simulating latent heat release).
     latent_heat_ref_rain: float = 2000.0 # Scaling factor for latent heat reference rain.
     humidity_greenhouse_factor: float = 1.5 # Extra heat trapped near surface in wet/humid tropical areas (°C).
@@ -54,52 +59,51 @@ class Thermal:
 
     # ---- Initialization ----
     def init_temperature_map(self):
-        # 1. Base Planetary Temperature (Latitude Gradient)
-        declination = self.worldConfig.worldConfig.declination
-        solar_vectors = self.worldConfig.worldConfig.solar_vectors
-        base_temp = get_temperature_grid(self.worldConfig.size, self.worldConfig.max_size, self.worldConfig.latitude, declination)
+        altitude = self.worldConfig["height"]()
+        sea_mask, sea_level = self.worldConfig["sea_mask"](), self.worldConfig["sea_level"]()
+        declination = self.worldConfig.declination
+        season = self.worldConfig.season
+
+        solar_vectors = self.worldConfig.solar_vectors
+        di, dj = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
+
+        phase = season_phase(season)
+
+        # 1. Latitude-Based Temperature Gradient
+        temp_mean, temp_delta = get_temperature_grid(self.worldConfig.size, self.worldConfig.max_size, self.worldConfig.latitude, phase)
         
         # 2. Topographic Altitude Effect (Lapse Rate)
-        altitude = self.worldConfig["height"]() * self.worldConfig.max_altitude
-        altitude_effect = (altitude / 1000.0) * self.config.lapse_rate
+        altitude = np.maximum(altitude - sea_level, 0.0)  # Treat anything below sea level as sea level for temperature purposes
+        altitude_effect = ((altitude * self.worldConfig.max_altitude) / 1000.0) * self.config.lapse_rate
 
-        # 3. Microclimate Alterations (Water Buffers, Upwelling Currents, & Continentality)
-        water_cooling_effect, continentality = get_water_cooling(self.worldConfig, self.config)
-
-        # 4. Seasonality
-        seasonal_amplitude = np.sin(declination) * 2  # Varies from -2 to +2 over the year
-        # in summer makes inland hotter, in winter makes it colder (less moderating ocean influence)
-        continentality *= seasonal_amplitude
-
-        if seasonal_amplitude > 0:
-            # In summer, amplify continentality effect (hotter inland)
-            water_cooling_effect = water_cooling_effect * seasonal_amplitude
-        else:
-            water_cooling_effect = 0.5 * water_cooling_effect * seasonal_amplitude  # In winter, reduce cooling effect (less ocean moderation)
+        # 3. Microclimate Alterations (Water Buffers & Continentality grids)
+        water_buffer_effect, continentality = get_water_cooling(self.worldConfig, self.config)
 
         # 4. Aspect/Hillshade Solar Radiative Heating
-        sun = get_sun_heating(self.worldConfig, declination, solar_vectors) 
-        sun_heating = self.config.cooling_effects['sun'][0] * sun
+        sun = self.config.cooling_effects['sun'][0] * get_sun_heating(di, dj, self.worldConfig.latitude, declination, solar_vectors) 
+        sun[sea_mask] = 0.0  # No solar heating on water cells
 
+        # Linear water buffer to multipplicative thermal inertia
+        thermal_damping = np.clip(1.0 - (0.8 * water_buffer_effect) / (self.config.cooling_effects['sea'][0] + 1e-5), 0.2, 1.0)  # Damping factor between 0.5 and 1.0
+        effective_seasonal_swing = (temp_delta * (1.0 + continentality)) * thermal_damping
         # Combine primary thermodynamic layers
-        temperature = base_temp - altitude_effect - water_cooling_effect + continentality + sun_heating
+        
+        hemisphere_sign = np.where(self.worldConfig.latitude >= 0, 1, -1)
+        # This creates a localized map that applies only to water and immediate coastal bands
+        marine_drift = (phase * hemisphere_sign * self.config.marine_drift_amplitude) * (water_buffer_effect / self.config.cooling_effects['sea'][0])  # Max shift of 6°C at the coast, tapering off with distance from water
+        temp_mean_shifted = temp_mean + marine_drift 
+        
+        temperature = temp_mean_shifted + effective_seasonal_swing - altitude_effect + sun
+        print(temperature.mean(), temperature.min(), temperature.max())
+        
+        # 7. Planetary Feedback Ticks
+        #if "rain" in self.worldConfig.maps:
+        #    rain_norm = np.clip(self.worldConfig["rain"]() / self.config.latent_heat_ref_rain, 0.0, 1.0)
+        #    temperature += self.config.latent_heat_factor * rain_norm
 
-        # 5. Planetary Feedback Ticks (Multi-pass integrations)
-        if "rain" in self.worldConfig.maps:
-            rain_norm = np.clip(self.worldConfig["rain"]() / self.config.latent_heat_ref_rain, 0.0, 1.0)
-            temperature += self.config.latent_heat_factor * rain_norm
-
-        if "humidity" in self.worldConfig.maps:
-            humidity_norm = np.clip(self.worldConfig["humidity"]() / self.config.humidity_greenhouse_ref, 0.0, 1.0)
-            temperature += self.config.humidity_greenhouse_factor * humidity_norm
+        #if "humidity" in self.worldConfig.maps:
+        #    humidity_norm = np.clip(self.worldConfig["humidity"]() / self.config.humidity_greenhouse_ref, 0.0, 1.0)
+        #    temperature += self.config.humidity_greenhouse_factor * humidity_norm
 
         return FastInterpolator(temperature, order=1), FastInterpolator(sun, order=1)
         
-    
-
-
-    
-
-
-
-

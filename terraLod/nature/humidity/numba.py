@@ -5,8 +5,9 @@ Numba-accelerated kernels for the climate humidity simulation.
 import numpy as np
 from numba import njit, prange
 
+
 @njit(cache=True, parallel=True)
-def advect_numba(humidity, speed_i, speed_j, max_advection_cells):
+def advect_numba(humidity, speed_i, speed_j, max_advection):
     """
     Parallel Semi-Lagrangian back-tracing advection.
     speed_i and speed_j must be passed in units of: cells per iteration.
@@ -24,8 +25,8 @@ def advect_numba(humidity, speed_i, speed_j, max_advection_cells):
             mag = (disp_i ** 2 + disp_j ** 2) ** 0.5
             
             # Capping maximum movement to prevent tracking out-of-bounds array artifacts
-            if mag > max_advection_cells:
-                scale = max_advection_cells / mag
+            if mag > max_advection:
+                scale = max_advection / mag
                 disp_i *= scale
                 disp_j *= scale
 

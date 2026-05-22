@@ -20,13 +20,14 @@ class LayerSpec:
     vrange:         Tuple[float, float]         = (0.0, 1.0)
     auto_range:     bool                        = False
     norm_type:      str                         = "linear"
-    wind_cmap:      str                         = "plasma" # Special colormap for wind speed in streamplot, since it uses color for magnitude not value
     renderer:       Optional[Callable]          = field(default=None, repr=False)
 
     def resolve_range(self, data: np.ndarray) -> Tuple[float, float]:
         #auto_range (min_percentile, max_percentile) 
         if not self.auto_range:
-            return self.vrange
+            r1 = min(self.vrange[0], np.nanmin(data))
+            r2 = max(self.vrange[1], np.nanmax(data))
+            return (r1, r2)
         #convert range percentiles to 0-100 scale and compute percentiles
         sea_mask = np.zeros(data.shape, dtype=bool)
 
@@ -39,12 +40,12 @@ class LayerSpec:
 def _default_layer_specs() -> dict[str, LayerSpec]:
     return {
         "height":        LayerSpec("norm",    cmap="terrain", vrange=(-0.2, 1.0)),
-        "temperature":   LayerSpec("°C",       cmap="inferno", vrange=(-10, 30),    auto_range=(0,1)),
+        "temperature":   LayerSpec("°C",       cmap="coolwarm", vrange=(-10, 35)),
         "sun":           LayerSpec("norm",     cmap="gray"),
         "humidity":      LayerSpec("hPa",      cmap="Blues",   vrange=(0, 60), auto_range = (0,1)),
         "rain":          LayerSpec("mm/yr",    cmap="Blues",   vrange=(1.0, 2000), auto_range=(0,1)),
         "soil_moisture": LayerSpec("mm",       cmap="Greens",  vrange=(0, 200),  auto_range=(0,1)),
-        "wind":          LayerSpec("m/s",      cmap="cool",    vrange=(0, 25), auto_range=(0,1)),
+        "wind":          LayerSpec("m/s",      cmap="magma",    vrange=(0, 25), auto_range=(0,1)),
         "runoff":        LayerSpec("mm/step",  cmap="YlGnBu",  vrange=(0.1, 50), auto_range=(0,1)),
         "water_depth":   LayerSpec("m",        cmap="Blues",   vrange=(0, 10), auto_range=(0,1)),
         "discharge":     LayerSpec("m/step",   cmap="YlGnBu",  vrange=(1e-3, 0.5), auto_range=(0,1)),
@@ -59,7 +60,7 @@ WATER_COLORS: dict[str, np.ndarray] = {
 @dataclass
 class PlotterConfig:
     """Global settings for the Plotter."""
-    wind_subsample: int = 4  # Subsampling stride for wind vector field. Higher = faster but less detailed. Only applies to wind layer.
+    wind_sample_points: int = 100  # Target number of points to plot in wind streamplot (controls subsampling density)
 
 class Plotter:
     """Visualisation module. Attach to a World with ``Plotter(world)``."""
@@ -73,11 +74,10 @@ class Plotter:
 
     def plot_all(self, keys: Optional[List[str]] = None, **kwargs) -> Tuple[Figure, List[Axes]]:
         """Plots all matching layers cleanly inside a unified Nx2 subplot grid layout."""
-        keys = keys or [k for k in self.specs if k in self.world.maps and k not in ("wind", "sun")]
-        if not keys:
-            return plt.figure(), []
-
-        n_plots = len(keys)
+        if keys is None:
+            keys = ["height", "wind", "temperature", "humidity", "rain", "soil_moisture", "runoff","sun"]
+        
+        n_plots = len(keys) + 1
         n_rows = (n_plots + 1) // 2
         
         # Pop standard grid figsize out so it isn't passed down downstream to single plot logic
@@ -87,17 +87,23 @@ class Plotter:
 
         for i, key in enumerate(keys):
             # Setup the specific layer overrides used during grid builds
-            opts = {"show_wind": (key == "height")}
+            opts = {}
+            if key == "wind":
+                opts["show_wind"] = True  
+                key = "height"  # Wind layer spec is mostly the same as height, but with the show_wind flag enabled to trigger streamplot rendering
+            
             opts.update(kwargs)
             
             # Delegate entirely to the refactored plot method!
             self.plot(key, ax=axes_flat[i], **opts)
 
+        
+
         # Clear out any leftover empty subplots if we have an odd count
         for j in range(n_plots, len(axes_flat)):
             fig.delaxes(axes_flat[j])
 
-        title = f"Season : {self.world.season.capitalize()} | Hour: {self.world.worldConfig.hour}:00 | Latitude: {self.world.worldConfig.latitude}°"
+        title = f"Season : {self.world.time.get_season().capitalize()} | Hour: {self.world.worldConfig.hour}:00 | Latitude: {self.world.worldConfig.latitude}°"
 
         fig.suptitle(title, fontsize=16)
         plt.tight_layout()
@@ -117,7 +123,7 @@ class Plotter:
             fig, ax = plt.subplots(figsize=kwargs.pop("figsize", (8, 8)))
 
         im, max_wind = self._render_map(key, ax, kwargs)
-        self._finalize_axis(ax, key, im)
+        self._finalize_axis(ax, key, im, kwargs)
 
         if standalone:
             plt.tight_layout()
@@ -144,7 +150,7 @@ class Plotter:
     def _render_filter(self, opts, ax, key):
         c = np.ones(self.world.size)
         ax.imshow(c, cmap="gray", alpha=0.05, origin=self.origin, vmin=0, vmax=1.0)
-    def _finalize_axis(self, ax: Axes, key, im=None) -> None:
+    def _finalize_axis(self, ax: Axes, key, im=None, opts=None) -> None:
         """Standardized labels, ticks, and colorbars."""
         title = f"{key.capitalize()} Map"
         label = f"{key} ({self.specs[key].unit})"
@@ -161,7 +167,10 @@ class Plotter:
 
         ax.set_xlim(0, cols - 1)
         ax.set_ylim(0, rows - 1)
-        if im  and key != "height":
+        if im:
+            if key == "height" and opts.get("show_wind", False):
+                ax.set_title(f"Wind", fontsize=14)
+                return
             if isinstance(im.norm, LogNorm):
                 formatter = LogFormatterMathtext(base=10, labelOnlyBase=True)
                 locator = LogLocator(base=10, subs=(1.0,))
@@ -170,8 +179,8 @@ class Plotter:
                 plt.colorbar(im, ax=ax, label=label, shrink=0.5)
 
     
-    def _get_range_cmap(self, key, spec):
-        vmin, vmax = spec.resolve_range(self.world[key]())
+    def _get_range_cmap(self, key, data, spec):
+        vmin, vmax = spec.resolve_range(data)
         cmap = spec.cmap
         if key == "height":
             # Plot height normally first (like sea_level 0 should start as green and up to vmax 1).
@@ -180,6 +189,7 @@ class Plotter:
             cmap = LinearSegmentedColormap.from_list(
                 "terrain_land", plt.cm.terrain(np.linspace(0.20, 1.0, 256))
             )
+            
         return vmin, vmax, cmap
 
     def _get_norm(self, spec, vmin, vmax):
@@ -196,7 +206,7 @@ class Plotter:
     def _render_layer(self, key, ax, opts, spec):
         data = self.world[key]().copy()
 
-        vmin, vmax, cmap = self._get_range_cmap(key, spec)
+        vmin, vmax, cmap = self._get_range_cmap(key, data, spec)
         norm = self._get_norm(spec, vmin, vmax)
 
         cmap_obj = plt.get_cmap(cmap)
@@ -209,13 +219,13 @@ class Plotter:
     def _render_sun(self,opts, ax, key):
         if opts.get("show_sun", True) and "sun" in self.world.maps:
             sun = self.world["sun"]()
-            alpha = 0.25 if key == "height" else 0.05
+            alpha = 0.5 if key == "height" else 0.1
             ax.imshow(1 - sun, cmap="gray", alpha=alpha, origin=self.origin)
     
     @timeit(label="Contour Rendering")
     def _render_contour(self, opts, ax, key):
         if opts.get("show_contour", True):
-            h = self.world["height"]() - float(getattr(self.world, "sea_level", 0.0))
+            h = self.world["height"]() - self.world["sea_level"]()
             cnt = ax.contour(h, levels=10, colors="black", linewidths=0.5, alpha=0.75)
             ax.clabel(cnt, inline=True, fontsize=7, fmt="%.2f")
             self._render_sea_contour(opts, ax, key)
@@ -226,8 +236,16 @@ class Plotter:
             ax.contour(sea_mask, levels=[0.5], colors="darkblue", linewidths=0.65, alpha=0.75)  
 
     def _subsample_wind(self, u, v):
-        stride = self.config.wind_subsample
-        return u[::stride, ::stride], v[::stride, ::stride], np.arange(0, u.shape[1], stride), np.arange(0, u.shape[0], stride)
+        h, w  = u.shape
+        total = h * w
+        stride = int(np.sqrt(total / self.config.wind_sample_points))
+
+        u_new = u[::stride, ::stride]
+        v_new = v[::stride, ::stride]
+        x_new = np.linspace(0, w - 1, u_new.shape[1])
+        y_new = np.linspace(0, h - 1, u_new.shape[0])
+         
+        return u_new, v_new, x_new, y_new
     
     @timeit(label="Wind Rendering")
     def _render_wind(self, opts, ax, key, spec):
@@ -238,13 +256,16 @@ class Plotter:
             u, v, x, y = self._subsample_wind(u, v)
             sq = np.hypot(u, v)
             
-            vmin, vmax, cmap = self._get_range_cmap(key, spec)
+            vmin, vmax, cmap = self._get_range_cmap("wind", sq, self.specs["wind"])
             norm = self._get_norm(spec, vmin, vmax)
 
-            ax.streamplot(x, y, u, v, color=sq, cmap=spec.wind_cmap, norm=norm, linewidth=0.7, arrowsize=0.5)
             
-            mappable = plt.cm.ScalarMappable(norm=norm, cmap=spec.wind_cmap)
-            plt.colorbar(mappable, ax=ax, label="Wind Speed (m/s) [Power Scale]", shrink=0.5)
+
+            sp = ax.streamplot(x, y, u, v, color=sq, cmap=cmap, norm=norm, 
+                        linewidth=1.5, arrowsize=1.0, minlength=0.25, broken_streamlines=False)
+            
+            
+            plt.colorbar(sp.lines, ax=ax, label="Wind Speed (m/s)" , shrink=0.5)
 
         return max_wind
     

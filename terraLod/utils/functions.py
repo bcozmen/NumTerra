@@ -14,16 +14,12 @@ def get_grid(lim = (0, 1, 0, 1), shape = (2048, 2048)):
     y = np.linspace(lim[2], lim[3], shape[1])
     return np.meshgrid(x, y, indexing='ij')
 
-def get_slope(height_map, cell_sizes, scale_factor=1.0):
-    """
-    Returns:
-        slope_rad : slope angle in RADIANS  (not degrees)
-        grad_x    : dH/dx in units of (height_map * scale_factor) / cell_size
-        grad_y    : dH/dy  "
-    If height_map is normalized [0,1] and scale_factor=max_altitude (m),
-    cell_sizes in metres → grad in m/m (dimensionless slope), slope in radians.
-    """
+def get_slope(height_map, sea_level, cell_sizes, scale_factor=1.0):
+    height_map = np.clip(height_map - sea_level, 0, None)  # Treat anything below sea level as sea level for slope purposes
     height_map = height_map * scale_factor
+    #height_map = height_map * scale_factor
+    #height_map = np.clip(height_map - sea_level * scale_factor, 0, 1)  # Treat anything below sea level as sea level for slope purposes
+
     grad_x, grad_y = np.gradient(height_map, *cell_sizes)
     slope_rad = np.arctan(np.sqrt(grad_x**2 + grad_y**2))   # radians
     return slope_rad, grad_x, grad_y

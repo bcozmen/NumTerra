@@ -2,6 +2,8 @@ from scipy.ndimage import gaussian_filter
 from dataclasses import dataclass
 import numpy as np
 
+
+
 from terraLod.utils import FastInterpolator, timeit
 from ..wind.helper import get_lat_grid
 from .numba import (
@@ -13,7 +15,10 @@ from .numba import (
 
 @dataclass
 class HumidityConfig:
-    iterations: int = 12                  
+    world_max_size : float 
+    cell_size : tuple
+    iterations: int = 12      
+    max_advection_percent: float = 0.02     # Max fraction of world size a parcel with 1m/s speed can move in total      
     evaporation_rate: float = 0.08        # Dropped slightly to stop aggressive sea-rain loops
     diffusion_sigma: float = 2.0          # Slightly sharper transitions
     orographic_factor: float = 0.12       # Increased so mountains squeeze out water effectively
@@ -30,17 +35,26 @@ class HumidityConfig:
     soil_evap_rate: float = 0.02          # Lowered so soils don't instantly vaporize
     wilting_point: float = 0.10           
     
-    max_advection_cells: float = 15.0     
     max_rain: float = 2000.0              
     rain_shadow_fraction: float = 0.50    # Deserts behind mountains are now drier
     hpa_to_mm_factor: float = 25.0        # Normalized scaling factor
+
+    @property
+    def cells_per_ms_per_iter(self):
+        L_cells = self.world_max_size / self.cell_size[0]
+        return (self.max_advection_percent * L_cells) / self.iterations
+
+    @property
+    def max_advection_cells(self):
+        return 2 * self.cells_per_ms_per_iter  # Max movement in cells per iteration, doubled for safety margin
+
 
 class Humidity:
     @timeit(label="Humidity Initialization")
     def __init__(self, worldConfig):
         self.worldConfig = worldConfig
         self.worldConfig["model_humidity"] = self
-        self.config = HumidityConfig()
+        self.config = HumidityConfig(world_max_size=self.worldConfig.max_size, cell_size=self.worldConfig.cell_size)
         self.run()
 
     def __call__(self, area=None):
@@ -81,14 +95,11 @@ class Humidity:
         runoff_accum = np.zeros_like(temp_field, dtype=np.float64)
 
         wind = self.worldConfig["wind"]()
-        w_i = np.ascontiguousarray(wind[..., 0], dtype=np.float64)
-        w_j = np.ascontiguousarray(wind[..., 1], dtype=np.float64)
+        w_i = wind[..., 0] # m/s eastward
+        w_j = wind[..., 1] # m/s northward (positive j is south, so this is actually southward speed)
         
-        # --- TIME STEP INTEGRATION FIX ---
-        # dt is 3 months in seconds / iterations
-        dt = (3.0 * 30.0 * 24.0 * 3600.0) / self.config.iterations
-        speed_i = (w_i * dt) / self.worldConfig.cell_size[0]
-        speed_j = (w_j * dt) / self.worldConfig.cell_size[1]
+        speed_i = w_i * self.config.cells_per_ms_per_iter
+        speed_j = w_j * self.config.cells_per_ms_per_iter
 
         lat_rows = get_lat_grid(self.worldConfig)
         lat_abs = np.abs(lat_rows)
