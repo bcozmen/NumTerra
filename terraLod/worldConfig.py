@@ -4,7 +4,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from abc import ABC, abstractmethod
 
-from terraLod.utils import get_grid, get_slope, FastInterpolator, get_cell_size
+from terraLod.utils import get_grid, get_slope, get_cell_size
+from terraLod.utils import FastInterpolator, DummyInterpolator
 import matplotlib.pyplot as plt
 
 from terraLod.nature import Terrain, Thermal, Wind, Humidity,  Hydro
@@ -138,7 +139,6 @@ class World:
             value =  FastInterpolator(value, order=1, can_call=can_call)
         self.maps[key] = value
         if key == "height":
-
             slope, grad_i, grad_j = get_slope(value(), self["sea_level"](), self.cell_size, self.worldConfig.max_altitude)
             self.maps["slope"] = FastInterpolator(slope, order=1, can_call=can_call)
             self.maps["grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
@@ -153,9 +153,14 @@ class World:
     def __getitem__(self, key):
         if key in self.models:
             return self.models[key]
-        return self.maps[key].copy()
+        if key in self.maps:
+            return self.maps[key].copy()
 
-    
+        shape = self.size
+        if key == "wind":
+            shape = shape + (2,)
+            
+        return DummyInterpolator(np.zeros(shape, dtype=np.float32))  # Default to zero map if not found
 
 
 

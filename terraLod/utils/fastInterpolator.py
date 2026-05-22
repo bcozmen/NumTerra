@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.ndimage import map_coordinates, spline_filter
 
-class dummyWrapper:
+class DummyInterpolator:
     def __init__(self,value):
         self.value = value
     def __call__(self):
@@ -11,9 +11,16 @@ class FastInterpolator:
     def __init__(self, arr, order=3, can_call=True):
         self.orig_arr = arr
         self.dtype = arr.dtype
+        if isinstance(arr, FastInterpolator):
+            self.orig_arr = arr.orig_arr
+            self.interp_arr = arr.interp_arr
+            self.order = arr.order
+            self.can_call = arr.can_call
+            return
         if not isinstance(arr, np.ndarray):
-            arr = dummyWrapper(arr)
-
+            arr = DummyInterpolator(arr)
+        
+    
         self.interp_arr = None
 
         

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from .helper import get_temperature_grid, get_water_cooling, get_sun_heating, season_phase
 
-from terraLod.utils import FastInterpolator, timeit
+from terraLod.utils import FastInterpolator, timeit, get_water_masks
 
 
 #TODO -
@@ -15,8 +15,6 @@ from terraLod.utils import FastInterpolator, timeit
 class ThermalConfig:    
     lapse_rate: float = 6.5  # °C drop per 1000m elevation. Natural physics default is 6.5. Increase to make mountains even colder.
 
-    
-    
     cooling_effects: dict = field(default_factory=lambda: {
         'sea': (5.0, 50_000.0),            # (Max effect in °C, Scale in meters) How far inland sea breezes cool the land.
         'lake': (2.0, 5_000.0),            # Localized cooling around lakes. 
@@ -45,11 +43,12 @@ class Thermal:
         else: 
             self.generate(area)
 
+    #### ========== Simulation & Generation ==========
+
     @timeit(label="Thermal Simulation")
     def run(self):
-        temperature, sun = self.init_temperature_map()
-        self.worldConfig["temperature"] = temperature
-        self.worldConfig["sun"] = sun
+        temperature, sun = self._init_temperature_map()
+        self.set_maps(temperature, sun)
 
     @timeit(label="Thermal Generation")
     def generate(self, area):
@@ -57,7 +56,56 @@ class Thermal:
         area["temperature"] = self.worldConfig["temperature"](area.points).reshape(area.size)
         area["sun"] = self.worldConfig["sun"](area.points).reshape(area.size)
 
-    # ---- Initialization ----
+    ### ======== Maps Management ==========
+    def set_maps(self, temperature_map, sun_map):
+        self.worldConfig["temperature"] = FastInterpolator(temperature_map, order=1) 
+        self.worldConfig["sun"] = FastInterpolator(sun_map, order=1)
+
+    def get_maps(self):
+        sea_mask, lake_mask, river_mask = get_water_masks(self.worldConfig)
+        sea_level = self.worldConfig["sea_level"]()
+
+        height = self.worldConfig["height"]()
+        di, dj = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
+        sun = self.worldConfig["sun"]()
+
+        return sea_mask, lake_mask, river_mask, sea_level, height, sun, di, dj
+
+    ### ========= Temperature Map Initialization Core ==========
+    def _init_temperature_map(self):
+        sea_mask, lake_mask, river_mask, sea_level, height, sun, di, dj = self.get_maps()
+        phase = season_phase(self.worldConfig.season)
+
+        # 1. Latitude-Based Temperature Gradient
+        temp_mean, temp_delta = get_temperature_grid(self.worldConfig.size, self.worldConfig.max_size, self.worldConfig.latitude, phase)
+
+        # 2. Topographic Altitude Effect (Lapse Rate)
+        altitude = np.maximum(height - sea_level, 0.0)  # Treat anything below sea level as sea level for temperature purposes
+        altitude_effect = ((altitude * self.worldConfig.max_altitude) / 1000.0) * self.config.lapse_rate
+
+        # 3. Microclimate Alterations (Water Buffers & Continentality grids)
+        water_buffer_effect, continentality = get_water_cooling(self.worldConfig, self.config)
+
+        # 4. Aspect/Hillshade Solar Radiative Heating
+        sun_effect = self.config.cooling_effects['sun'][0] * get_sun_heating(di, dj, self.worldConfig.latitude, self.worldConfig.declination, self.worldConfig.solar_vectors) 
+        sun_effect[sea_mask] = 0.0  # No solar heating on water cells
+
+        # 5. Seasonal Swing Modulation by Continentality & Water Buffers
+        thermal_damping = np.clip(1.0 - (0.8 * water_buffer_effect) / (self.config.cooling_effects['sea'][0] + 1e-5), 0.2, 1.0)  # Damping factor between 0.5 and 1.0
+        effective_seasonal_swing = (temp_delta * (1.0 + continentality)) * thermal_damping
+
+        # 6. Marine Thermal Inertia Drift
+        hemisphere_sign = np.where(self.worldConfig.latitude >= 0, 1, -1)
+        marine_drift = (phase * hemisphere_sign * self.config.marine_drift_amplitude) * (water_buffer_effect / self.config.cooling_effects['sea'][0])  # Max shift of 6°C at the coast, tapering off with distance from water
+        temp_mean_shifted = temp_mean + marine_drift
+
+        # 7. Planetary Feedback Ticks (e.g. latent heat from rain, greenhouse effect from humidity) could be added here as additional layers
+        pass
+
+        # Final combined temperature map
+        temperature = temp_mean_shifted + effective_seasonal_swing - altitude_effect + sun_effect
+        return temperature, sun_effect
+
     def init_temperature_map(self):
         altitude = self.worldConfig["height"]()
         sea_mask, sea_level = self.worldConfig["sea_mask"](), self.worldConfig["sea_level"]()
@@ -105,5 +153,5 @@ class Thermal:
         #    humidity_norm = np.clip(self.worldConfig["humidity"]() / self.config.humidity_greenhouse_ref, 0.0, 1.0)
         #    temperature += self.config.humidity_greenhouse_factor * humidity_norm
 
-        return FastInterpolator(temperature, order=1), FastInterpolator(sun, order=1)
+        return temperature, sun
         

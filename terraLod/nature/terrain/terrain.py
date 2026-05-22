@@ -14,23 +14,45 @@ class Terrain:
         self.worldConfig = worldConfig
         self.worldConfig["model_terrain"] = self
         
+        self.noise_generator = None
+        self.run()  # Run the simulation immediately to initialize maps
+
+    def __call__(self, area=None):
+        if area is None: self.run()
+        else: self.generate(area)
+
+    #### ========== Simulation & Generation ==========
+    
+    @timeit(label="Terrain Simulation")
+    def run(self):
+        if self.noise_generator is not None:
+            raise ValueError("Terrain already initialized. To re-run the simulation, create a new instance of Terrain.")
         self.noise_generator = NoiseGenerator(self.worldConfig.seed)
-        height_map = self._init_height_map()
-        sea_mask, sea_level = self._init_sea_map(height_map)
-        
-        self.worldConfig["sea_mask"] = sea_mask
-        self.worldConfig["sea_level"] = sea_level
-        self.worldConfig["height"] = height_map
-
+        height_map, sea_mask, sea_level = self._init_maps()
+        self.set_maps(height_map, sea_mask, sea_level)
+    
     @timeit(label="Terrain Generation")
-    def __call__(self, area):
+    def generate(self, area):
         grid, points, size = area.grid, area.points, area.size
+        base = self.worldConfig["height"](points).reshape(size)
+        noise = self.noise_generator.get_noise(grid, macro = False)
+        pass
 
-        area["height"] = self._generate_height_map(grid, points, size)
-        area["sea_mask"] = self._generate_sea_mask(area["height"](), grid, points, size)
-        area.sea_level = self.worldConfig.sea_level
+    ### ========== Map Management ==========
+    def set_maps(self, height_map, sea_mask, sea_level):
+        self.worldConfig["height"] = FastInterpolator(height_map, order=3)
+        self.worldConfig["sea_mask"] = FastInterpolator(sea_mask, order=0)
+        self.worldConfig["sea_level"] = sea_level
+
+    def get_maps(self):
+        pass
 
     ## ---- Initialization ----
+    
+    def _init_maps(self):
+        height_map = self._init_height_map()
+        sea_mask, sea_level = self._init_sea_map(height_map)
+        return height_map, sea_mask, sea_level
     def _init_height_map(self):
         grid = get_grid(shape= self.worldConfig.size)
 

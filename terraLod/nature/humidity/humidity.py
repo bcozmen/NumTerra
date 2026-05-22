@@ -2,16 +2,12 @@ from scipy.ndimage import gaussian_filter
 from dataclasses import dataclass
 import numpy as np
 
+from terraLod.utils import FastInterpolator, timeit, get_lat_grid, get_water_masks
 
 
-from terraLod.utils import FastInterpolator, timeit
-from ..wind.helper import get_lat_grid
-from .numba import (
-    advect_numba,
-    humidity_capacity_numba,
-    compute_evaporation_numba,
-    compute_rain_and_update_numba,
-)
+from .helper import get_itcz
+
+from .numba import advect_numba, humidity_capacity, compute_evaporation_numba, compute_rain_and_update_numba
 
 @dataclass
 class HumidityConfig:
@@ -61,13 +57,12 @@ class Humidity:
         if area is None: self.run()
         else: self.generate(area)
 
+    #### ========== Simulation & Generation ==========
+
     @timeit(label="Humidity Simulation")
     def run(self):
-        humidity_map, rain_map, soil_map, runoff_map = self.simulate_climate()
-        self.worldConfig["humidity"]      = FastInterpolator(humidity_map, order=1) 
-        self.worldConfig["rain"]          = FastInterpolator(rain_map,     order=1)
-        self.worldConfig["soil_moisture"] = FastInterpolator(soil_map,     order=1)
-        self.worldConfig["runoff"]        = FastInterpolator(runoff_map,   order=1)
+        humidity_map, rain_map, soil_map, runoff_map = self._simulate_climate()
+        self.set_maps(humidity_map, rain_map, soil_map, runoff_map)
 
     @timeit(label="Humidity Generation")
     def generate(self, area):
@@ -77,64 +72,64 @@ class Humidity:
         area["soil_moisture"] = self.worldConfig["soil_moisture"](pts).reshape(size)
         area["runoff"]        = self.worldConfig["runoff"](pts).reshape(size)
 
-    def _get_masks(self):
-        sea = self.worldConfig["sea_mask"]()
-        zero = np.zeros_like(sea, dtype=bool)
-        lake = self.worldConfig["lake_mask"]() if "lake_mask" in self.worldConfig.maps else zero
-        river = self.worldConfig["river_mask"]() if "river_mask" in self.worldConfig.maps else zero
-        return sea, lake, river
+    ### ========== Map Management ==========
 
-    def simulate_climate(self):
-        sea_m, lake_m, river_m = self._get_masks()
-        temp_field = np.ascontiguousarray(self.worldConfig["temperature"](), dtype=np.float64)
+    def set_maps(self, humidity_map, rain_map, soil_map, runoff_map):
+        self.worldConfig["humidity"]      = FastInterpolator(humidity_map, order=1) 
+        self.worldConfig["rain"]          = FastInterpolator(rain_map,     order=1)
+        self.worldConfig["soil_moisture"] = FastInterpolator(soil_map,     order=1)
+        self.worldConfig["runoff"]        = FastInterpolator(runoff_map,   order=1)
+    
+    def get_maps(self):
+        sea, lake, river = get_water_masks(self.worldConfig)
+        temperature = self.worldConfig["temperature"]()
+        wind = self.worldConfig["wind"]() 
+        sun = self.worldConfig["sun"]() 
+
+        grad_i, grad_j = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
         
-        h_init = self.worldConfig["humidity"]() if "humidity" in self.worldConfig.maps else (humidity_capacity_numba(temp_field) * 0.5)
-        s_init = self.worldConfig["soil_moisture"]() if "soil_moisture" in self.worldConfig.maps else (np.ones_like(temp_field) * self.config.soil_capacity * 0.4)
+        humidity = self.worldConfig["humidity"]() if "humidity" in self.worldConfig.maps else (humidity_capacity(temperature) * 0.5)
+        soil_moisture = self.worldConfig["soil_moisture"]() if "soil_moisture" in self.worldConfig.maps else (np.ones_like(temperature) * self.config.soil_capacity * 0.4)
         
-        rain_accum = np.zeros_like(temp_field, dtype=np.float64)
-        runoff_accum = np.zeros_like(temp_field, dtype=np.float64)
+        return sea, lake, river, temperature, humidity, soil_moisture, wind, sun, grad_i, grad_j
+    
+    ## ========= Climate Simulation Core ==========
 
-        wind = self.worldConfig["wind"]()
-        w_i = wind[..., 0] # m/s eastward
-        w_j = wind[..., 1] # m/s northward (positive j is south, so this is actually southward speed)
+    def _simulate_climate(self):
+        sea_m, lake_m, river_m, temperature, humidity, soil_moisture, wind, sun, grad_i, grad_j = self.get_maps()
+        w_i, w_j = wind[..., 0], wind[..., 1]
         
-        speed_i = w_i * self.config.cells_per_ms_per_iter
-        speed_j = w_j * self.config.cells_per_ms_per_iter
+        rain = np.zeros_like(temperature, dtype=np.float32)
+        runoff = np.zeros_like(temperature, dtype=np.float32)
 
-        lat_rows = get_lat_grid(self.worldConfig)
-        lat_abs = np.abs(lat_rows)
-        itcz = np.clip(1.0 + 0.6 * np.exp(-(lat_abs / 12.0)**2) - 0.4 * np.exp(-((lat_abs - 30.0) / 8.0)**2), 0.3, 1.8)
-        itcz_factor = np.ascontiguousarray(np.broadcast_to(itcz[:, None], temp_field.shape).copy(), dtype=np.float64)
+        speed_i, speed_j = w_i * self.config.cells_per_ms_per_iter, w_j * self.config.cells_per_ms_per_iter
 
-        grad_i = np.ascontiguousarray(self.worldConfig["grad_i"](), dtype=np.float64)
-        grad_j = np.ascontiguousarray(self.worldConfig["grad_j"](), dtype=np.float64)
-        sun_map = np.ascontiguousarray(self.worldConfig["sun"](), dtype=np.float64)
+        itcz = get_itcz(get_lat_grid(self.worldConfig.latitude, temperature.shape, self.worldConfig.max_size))
 
         inv_iter = 1.0 / self.config.iterations
 
         for _ in range(self.config.iterations):
             evap_frac = compute_evaporation_numba(
-                temp_field, sun_map, w_i, w_j, sea_m, lake_m, river_m, s_init,
+                temperature, sun, w_i, w_j, sea_m, lake_m, river_m, soil_moisture,
                 self.config.evaporation_rate, self.config.land_evaporation,
                 self.config.sea_evaporation, self.config.lake_evaporation,
                 self.config.river_evaporation, self.config.soil_capacity
             )
 
-            h_init = advect_numba(h_init, speed_i, speed_j, self.config.max_advection_cells)
-            cap = humidity_capacity_numba(temp_field)
+            humidity = advect_numba(humidity, speed_i, speed_j, self.config.max_advection_cells)
+            cap = humidity_capacity(temperature)
 
-            h_init, s_init, rain_accum, runoff_accum = compute_rain_and_update_numba(
-                h_init, cap, evap_frac, w_i, w_j, grad_i, grad_j, sea_m, lake_m, river_m,
-                s_init, rain_accum, runoff_accum, self.config.condensation_rate,
+            humidity, soil_moisture, rain, runoff = compute_rain_and_update_numba(
+                humidity, cap, evap_frac, w_i, w_j, grad_i, grad_j, sea_m, lake_m, river_m,
+                soil_moisture, rain, runoff, self.config.condensation_rate,
                 self.config.orographic_factor, self.config.soil_capacity,
-                self.config.soil_evap_rate, itcz_factor, self.config.rain_shadow_fraction,
+                self.config.soil_evap_rate, itcz, self.config.rain_shadow_fraction,
                 self.config.wilting_point, self.config.hpa_to_mm_factor, inv_iter
             )
 
-            h_init = gaussian_filter(h_init, sigma=self.config.diffusion_sigma)
+            humidity = gaussian_filter(humidity, sigma=self.config.diffusion_sigma)
 
-        # Scale down annual accumulations to reasonable bounds
-        rain_accum = (rain_accum / self.config.iterations) * 12.0
-        runoff_accum = (runoff_accum / self.config.iterations) * 12.0
+        rain = (rain / self.config.iterations) * 12.0
+        runoff = (runoff / self.config.iterations) * 12.0
 
-        return h_init, rain_accum, s_init, runoff_accum
+        return humidity, rain, soil_moisture, runoff

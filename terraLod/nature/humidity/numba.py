@@ -5,6 +5,15 @@ Numba-accelerated kernels for the climate humidity simulation.
 import numpy as np
 from numba import njit, prange
 
+import numpy as np
+
+def humidity_capacity(temperature):
+    """
+    Compute saturation vapor pressure (hPa) using the Magnus formula.
+    Vectorized NumPy version of humidity_capacity_numba.
+    """
+    return 6.112 * np.exp(17.67 * temperature / (temperature + 243.5))
+
 
 @njit(cache=True, parallel=True)
 def advect_numba(humidity, speed_i, speed_j, max_advection):
@@ -60,16 +69,6 @@ def advect_numba(humidity, speed_i, speed_j, max_advection):
             )
     return out
 
-
-@njit(cache=True, parallel=True)
-def humidity_capacity_numba(temperature):
-    H, W = temperature.shape
-    out = np.empty((H, W), dtype=np.float64)
-    for i in prange(H):
-        for j in range(W):
-            t = temperature[i, j]
-            out[i, j] = 6.112 * np.exp(17.67 * t / (t + 243.5))
-    return out
 
 
 @njit(cache=True, parallel=True)

@@ -7,7 +7,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.colors import Normalize, LogNorm, PowerNorm, LinearSegmentedColormap
 from matplotlib.ticker import LogFormatterMathtext, LogLocator
-
+import matplotlib.colors as mcolors
 
 from terraLod.utils import timeit
 
@@ -45,7 +45,7 @@ def _default_layer_specs() -> dict[str, LayerSpec]:
         "humidity":      LayerSpec("hPa",      cmap="Blues",   vrange=(0, 60), auto_range = (0,1)),
         "rain":          LayerSpec("mm/yr",    cmap="Blues",   vrange=(1.0, 2000), auto_range=(0,1)),
         "soil_moisture": LayerSpec("mm",       cmap="Greens",  vrange=(0, 200),  auto_range=(0,1)),
-        "wind":          LayerSpec("m/s",      cmap="magma",    vrange=(0, 25), auto_range=(0,1)),
+        "wind":          LayerSpec("m/s",      cmap="plasma",    vrange=(0, 25), auto_range=(0,1)),
         "runoff":        LayerSpec("mm/step",  cmap="YlGnBu",  vrange=(0.1, 50), auto_range=(0,1)),
         "water_depth":   LayerSpec("m",        cmap="Blues",   vrange=(0, 10), auto_range=(0,1)),
         "discharge":     LayerSpec("m/step",   cmap="YlGnBu",  vrange=(1e-3, 0.5), auto_range=(0,1)),
@@ -247,6 +247,11 @@ class Plotter:
          
         return u_new, v_new, x_new, y_new
     
+    def _darken_cmap(self,cmap, factor):
+        cmap = plt.get_cmap(cmap)
+        colors = cmap(np.arange(cmap.N))
+        colors[:, :3] *= factor  # Darken RGB channels
+        return mcolors.ListedColormap(colors)
     @timeit(label="Wind Rendering")
     def _render_wind(self, opts, ax, key, spec):
         max_wind = 0
@@ -257,12 +262,15 @@ class Plotter:
             sq = np.hypot(u, v)
             
             vmin, vmax, cmap = self._get_range_cmap("wind", sq, self.specs["wind"])
+            
             norm = self._get_norm(spec, vmin, vmax)
 
+            #linewidth -> faster is smaller, 
+            linewidth = 1 + 1.0 * (sq / vmax)  # Scale line width by wind speed             
             
-
-            sp = ax.streamplot(x, y, u, v, color=sq, cmap=cmap, norm=norm, 
-                        linewidth=1.5, arrowsize=1.0, minlength=0.25, broken_streamlines=False)
+            sp = ax.streamplot(x, y, u, v, color=sq, cmap=self._darken_cmap(cmap, 0.9), norm=norm, 
+                        linewidth=linewidth, arrowsize=1.5, minlength=0.25, 
+                        broken_streamlines=False,  density=0.8)
             
             
             plt.colorbar(sp.lines, ax=ax, label="Wind Speed (m/s)" , shrink=0.5)

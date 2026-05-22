@@ -1,13 +1,14 @@
 import numpy as np
 from scipy.ndimage import distance_transform_edt
-from terraLod.utils import normalize
+from terraLod.utils import normalize, get_lat_grid, get_normalized_distance_to_mask, get_water_masks
+
 
 
 
 
 def get_temperature_grid(size, max_size, latitude, phase) -> np.ndarray:
     rows, cols = size
-    lat_grid = _get_latitude_grid(size, max_size, latitude)
+    lat_grid = get_lat_grid(latitude, size, max_size)
 
     mean_temp = _latitude_mean_temperature(latitude)
     seasonal_amplitude = _latitude_seasonal_amplitude(latitude)
@@ -33,32 +34,7 @@ def _latitude_seasonal_amplitude(latitude):
     lat_abs = abs(latitude)
     return 2.0 + (27.0 / 90.0) * lat_abs 
 
-def _get_latitude_grid(size, max_size, latitude: float) -> np.ndarray:
-    rows, cols = size
-    lat0 = np.radians(latitude)
-    # WGS84 ellipsoid approximation for meters per degree latitude
-    meters_per_deg_lat = (
-        111132.92
-        - 559.82 * np.cos(2 * lat0)
-        + 1.175 * np.cos(4 * lat0)
-        - 0.0023 * np.cos(6 * lat0)
-    )
-    lat_span_deg = max_size / meters_per_deg_lat
-    lat_grid_deg = np.linspace(latitude - lat_span_deg / 2.0, latitude + lat_span_deg / 2.0, rows)
-    return np.broadcast_to(lat_grid_deg[:, np.newaxis], (rows, rows))
 
-def get_water_masks(worldConfig):
-    def extract_mask(name):
-        return worldConfig[name]().astype(bool) if name in worldConfig.maps else np.zeros(worldConfig["sea_mask"]().shape, dtype=bool)
-    return [extract_mask(name) for name in ['sea_mask', 'river_mask', 'lake_mask']]
-
-def get_normalized_distance(mask, cell_size, max_distance):
-    #array shape size
-    distance = distance_transform_edt(~mask) * cell_size  # Convert to physical distance in meters
-    distance = distance / (max_distance)  # Normalize by max possible distance in the grid
-    distance[mask] = 0.0  # Ensure water cells have zero distance
-    distance = np.exp(-distance)
-    return distance
 
 def get_water_cooling(worldConfig, config):
     #mask true = water, false = land
@@ -69,10 +45,12 @@ def get_water_cooling(worldConfig, config):
         if not np.any(mask):
             continue  # skip if no cells of this type
 
-        water_distance = get_normalized_distance(mask, worldConfig.cell_size[0], config.cooling_effects[key][1]) # Normalize distance to a 200km scale
+        water_distance = get_normalized_distance_to_mask(mask, worldConfig.cell_size[0], config.cooling_effects[key][1]) # Normalize distance to a 200km scale
+        water_distance = np.exp(-water_distance)  # Exponential decay for smoother transition
         cooling_effect += config.cooling_effects[key][0] * water_distance
         if key == 'sea':
-            water_distance = get_normalized_distance(mask, worldConfig.cell_size[0], config.cooling_effects['continentality'][1]) # Normalize distance to a 200km scale
+            water_distance = get_normalized_distance_to_mask(mask, worldConfig.cell_size[0], config.cooling_effects['continentality'][1]) # Normalize distance to a 200km scale
+            water_distance = np.exp(-water_distance)  # Exponential decay for smoother transition
             continentality = config.cooling_effects['continentality'][0] * (1-water_distance)
 
     return cooling_effect, continentality
