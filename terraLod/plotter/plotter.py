@@ -1,5 +1,3 @@
-from __future__ import annotations
-from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple, List
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,56 +9,8 @@ import matplotlib.colors as mcolors
 
 from terraLod.utils import timeit
 
+from .config import LayerSpec, PlotterConfig, _default_layer_specs
 
-@dataclass
-class LayerSpec:
-    """Everything Plotter needs to visualise one named map layer."""
-    unit:           str
-    cmap:           str                         = "viridis"
-    vrange:         Tuple[float, float]         = (0.0, 1.0)
-    auto_range:     bool                        = False
-    norm_type:      str                         = "linear"
-    renderer:       Optional[Callable]          = field(default=None, repr=False)
-
-    def resolve_range(self, data: np.ndarray) -> Tuple[float, float]:
-        #auto_range (min_percentile, max_percentile) 
-        if not self.auto_range:
-            r1 = min(self.vrange[0], np.nanmin(data))
-            r2 = max(self.vrange[1], np.nanmax(data))
-            return (r1, r2)
-        #convert range percentiles to 0-100 scale and compute percentiles
-        sea_mask = np.zeros(data.shape, dtype=bool)
-
-        lo, hi = np.percentile(data[~sea_mask], [self.auto_range[0] * 100, self.auto_range[1] * 100])
-        
-        return lo, hi
-        
-
-
-def _default_layer_specs() -> dict[str, LayerSpec]:
-    return {
-        "height":        LayerSpec("norm",    cmap="terrain", vrange=(-0.2, 1.0)),
-        "temperature":   LayerSpec("°C",       cmap="coolwarm", vrange=(-10, 35)),
-        "sun":           LayerSpec("norm",     cmap="gray"),
-        "humidity":      LayerSpec("hPa",      cmap="Blues",   vrange=(0, 60), auto_range = (0,1)),
-        "rain":          LayerSpec("mm/yr",    cmap="Blues",   vrange=(1.0, 2000), auto_range=(0,1)),
-        "soil_moisture": LayerSpec("mm",       cmap="Greens",  vrange=(0, 200),  auto_range=(0,1)),
-        "wind":          LayerSpec("m/s",      cmap="plasma",    vrange=(0, 25), auto_range=(0,1)),
-        "runoff":        LayerSpec("mm/step",  cmap="YlGnBu",  vrange=(0.1, 50), auto_range=(0,1)),
-        "water_depth":   LayerSpec("m",        cmap="Blues",   vrange=(0, 10), auto_range=(0,1)),
-        "discharge":     LayerSpec("m/step",   cmap="YlGnBu",  vrange=(1e-3, 0.5), auto_range=(0,1)),
-    }
-
-WATER_COLORS: dict[str, np.ndarray] = {
-    "sea":   np.array([0.00, 0.20, 0.50]),
-    "lake":  np.array([0.00, 0.25, 0.85]),
-    "river": np.array([0.25, 0.60, 1.00]),
-}
-
-@dataclass
-class PlotterConfig:
-    """Global settings for the Plotter."""
-    wind_sample_points: int = 100  # Target number of points to plot in wind streamplot (controls subsampling density)
 
 class Plotter:
     """Visualisation module. Attach to a World with ``Plotter(world)``."""
@@ -155,7 +105,13 @@ class Plotter:
         title = f"{key.capitalize()} Map"
         label = f"{key} ({self.specs[key].unit})"
 
+        map = self.world[key]()
+        sea_mask = self.world["sea_mask"]().astype(bool)
+        mean = np.nanmean(map)
+        mean_without_sea = np.nanmean(map[~sea_mask]) 
 
+        title += f"\nMean: {mean:.2f}" 
+        title += f" | Land Mean: {mean_without_sea:.2f}"
         ax.set_title(title, fontsize=14)
         rows, cols = self.world.size
         cy, cx = self.world.cell_size
@@ -184,7 +140,7 @@ class Plotter:
         cmap = spec.cmap
         if key == "height":
             # Plot height normally first (like sea_level 0 should start as green and up to vmax 1).
-            vmin = getattr(self.world, "sea_level", 0.0)
+            vmin = 0
             vmax = 1.0
             cmap = LinearSegmentedColormap.from_list(
                 "terrain_land", plt.cm.terrain(np.linspace(0.20, 1.0, 256))
@@ -276,6 +232,7 @@ class Plotter:
             plt.colorbar(sp.lines, ax=ax, label="Wind Speed (m/s)" , shrink=0.5)
 
         return max_wind
+        
     
     def _render_sea(self, opts, ax, key):
         if key != "height":

@@ -22,11 +22,11 @@ class ThermalConfig:
         'continentality': (0.75, 200_000.0), # % of seasonal swing added back per 200km from coast. Makes deep interiors have more extreme seasons.
         'sun': (4.0,)                       # Max solar heating amplitude in °C. South-facing slopes get this much hotter.
     })
-    marine_drift_amplitude: float = 6.0 # Max seasonal shift in mean temperature at the coast due to ocean thermal inertia (°C).
+    marine_drift_amplitude: float = 4.0 # Max seasonal shift in mean temperature at the coast due to ocean thermal inertia (°C).
     latent_heat_factor: float = 1.0         # How much °C the air warms when heavy rain falls (simulating latent heat release).
-    latent_heat_ref_rain: float = 2000.0 # Scaling factor for latent heat reference rain.
+    latent_heat_ref_rain: float = 300.0 # Scaling factor for latent heat reference rain.
     humidity_greenhouse_factor: float = 1.5 # Extra heat trapped near surface in wet/humid tropical areas (°C).
-    humidity_greenhouse_ref: float = 50.0   # hPa normalization baseline for greenhouse warming calculation.
+    humidity_greenhouse_ref: float = 15.0   # hPa normalization baseline for greenhouse warming calculation.
 
 
 class Thermal:
@@ -87,7 +87,8 @@ class Thermal:
         water_buffer_effect, continentality = get_water_cooling(self.worldConfig, self.config)
 
         # 4. Aspect/Hillshade Solar Radiative Heating
-        sun_effect = self.config.cooling_effects['sun'][0] * get_sun_heating(di, dj, self.worldConfig.latitude, self.worldConfig.declination, self.worldConfig.solar_vectors) 
+        sun = get_sun_heating(di, dj, self.worldConfig.latitude, self.worldConfig.declination, self.worldConfig.solar_vectors)
+        sun_effect = self.config.cooling_effects["sun"][0] * sun
         sun_effect[sea_mask] = 0.0  # No solar heating on water cells
 
         # 5. Seasonal Swing Modulation by Continentality & Water Buffers
@@ -104,7 +105,7 @@ class Thermal:
 
         # Final combined temperature map
         temperature = temp_mean_shifted + effective_seasonal_swing - altitude_effect + sun_effect
-        return temperature, sun_effect
+        return temperature, sun
 
     def init_temperature_map(self):
         altitude = self.worldConfig["height"]()
@@ -128,11 +129,11 @@ class Thermal:
         water_buffer_effect, continentality = get_water_cooling(self.worldConfig, self.config)
 
         # 4. Aspect/Hillshade Solar Radiative Heating
-        sun = self.config.cooling_effects['sun'][0] * get_sun_heating(di, dj, self.worldConfig.latitude, declination, solar_vectors) 
+        sun = self.config.cooling_effects["sun"][0] * get_sun_heating(di, dj, self.worldConfig.latitude, declination, solar_vectors) 
         sun[sea_mask] = 0.0  # No solar heating on water cells
 
         # Linear water buffer to multipplicative thermal inertia
-        thermal_damping = np.clip(1.0 - (0.8 * water_buffer_effect) / (self.config.cooling_effects['sea'][0] + 1e-5), 0.2, 1.0)  # Damping factor between 0.5 and 1.0
+        thermal_damping = np.clip(1.0 - (0.8 * water_buffer_effect) / (self.config.cooling_effects["sea"][0] + 1e-5), 0.2, 1.0)  # Damping factor between 0.5 and 1.0
         effective_seasonal_swing = (temp_delta * (1.0 + continentality)) * thermal_damping
         # Combine primary thermodynamic layers
         
@@ -145,13 +146,13 @@ class Thermal:
         print(temperature.mean(), temperature.min(), temperature.max())
         
         # 7. Planetary Feedback Ticks
-        #if "rain" in self.worldConfig.maps:
-        #    rain_norm = np.clip(self.worldConfig["rain"]() / self.config.latent_heat_ref_rain, 0.0, 1.0)
-        #    temperature += self.config.latent_heat_factor * rain_norm
+        if "rain" in self.worldConfig.maps:
+            rain_norm = np.clip(self.worldConfig["rain"]() / self.config.latent_heat_ref_rain, 0.0, 1.0)
+            temperature += self.config.latent_heat_factor * rain_norm
 
-        #if "humidity" in self.worldConfig.maps:
-        #    humidity_norm = np.clip(self.worldConfig["humidity"]() / self.config.humidity_greenhouse_ref, 0.0, 1.0)
-        #    temperature += self.config.humidity_greenhouse_factor * humidity_norm
+        if "humidity" in self.worldConfig.maps:
+            humidity_norm = np.clip(self.worldConfig["humidity"]() / self.config.humidity_greenhouse_ref, 0.0, 1.0)
+            temperature += self.config.humidity_greenhouse_factor * humidity_norm
 
         return temperature, sun
         

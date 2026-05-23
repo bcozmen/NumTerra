@@ -1,5 +1,5 @@
 import numpy as np
-
+from scipy.ndimage import map_coordinates
 
 
 #get prevailing wind with small 
@@ -21,6 +21,7 @@ def get_prevailing_wind(world, lat_deg, curve_strength=1.0, num_turns=1, rotatio
 
     angle = np.random.normal(loc=0.0, scale=rotation_sigma)  # mean 0, stddev rotation_sigma degrees
     u_grid, v_grid = apply_rotation(u_grid, v_grid, angle)
+    u_grid, v_grid = apply_warp(u_grid, v_grid)
     
     return u_grid, v_grid
 
@@ -34,49 +35,58 @@ def apply_rotation(u, v, angle_degrees):
     v_new = sin_a * u + cos_a * v
     return u_new, v_new
 
-import numpy as np
-from scipy.ndimage import gaussian_filter, map_coordinates
 
+def apply_warp(u, v):
+    iters = np.random.randint(1, 5)  # Randomly choose 1 to 3 warps to apply
+    for _ in range(iters):
+        center = np.random.rand(2) * 1.5 - 0.25
+        radius = np.random.rand() * 1.5 + 0.5
+        max_angle = np.random.rand() * 50 + 20
+        direction = np.random.choice([-1, 1])
+        u, v = _apply_warp(u, v, center=center, radius=radius, max_angle=max_angle, direction=direction)
+    return u, v
+def _apply_warp(u, v, center=(0.5, -1.0), radius=1.5, max_angle=20, direction=1):
+    #direction : +1 (left), -1 (right)
 
-def apply_warp(u, v, strength=5.0, sigma=10.0, seed=None):
-    """
-    Warps a vector field by displacing sampling coordinates
-    using a smooth scalar potential field ψ.
-
-    This preserves continuity of flow lines.
-    """
+    max_angle = np.radians(max_angle)
 
     H, W = u.shape
 
-    # --- 1. Create smooth scalar field ψ (pressure-like potential) ---
-    rng = np.random.default_rng(seed)
-    psi = rng.normal(0, 1, size=(H, W))
-    psi = gaussian_filter(psi, sigma=sigma)
+    y, x = np.mgrid[0:H, 0:W]
+    x = x / (W - 1)
+    y = y / (H - 1)
 
-    # --- 2. Compute displacement field = ∇ψ ---
-    # central differences via np.gradient
-    dpsi_dy, dpsi_dx = np.gradient(psi)
+    cy, cx = center
 
-    # normalize displacement magnitude
-    norm = np.sqrt(dpsi_dx**2 + dpsi_dy**2) + 1e-8
-    dpsi_dx /= norm
-    dpsi_dy /= norm
+    dx = x - cx
+    dy = y - cy
 
-    # apply strength
-    dx = strength * dpsi_dx
-    dy = strength * dpsi_dy
+    r2 = dx*dx + dy*dy
+    R2 = radius * radius + 1e-12
 
-    # --- 3. Build sampling grid ---
-    y, x = np.meshgrid(np.arange(H), np.arange(W), indexing="ij")
+    # smooth falloff + bounded rotation field
+    w = np.exp(-r2 / R2)
 
-    x_warped = x + dx
-    y_warped = y + dy
+    theta = direction * max_angle * w
 
-    # --- 4. Sample original wind at warped coordinates ---
-    u_warped = map_coordinates(u, [y_warped, x_warped], order=1, mode="reflect")
-    v_warped = map_coordinates(v, [y_warped, x_warped], order=1, mode="reflect")
+    c, s = np.cos(theta), np.sin(theta)
 
-    return u_warped, v_warped
+    xw = cx + dx * c - dy * s
+    yw = cy + dx * s + dy * c
+
+    # back to index space
+    xw = xw * (W - 1)
+    yw = yw * (H - 1)
+
+    u2 = map_coordinates(u, [yw, xw], order=1, mode="reflect")
+    v2 = map_coordinates(v, [yw, xw], order=1, mode="reflect")
+
+    # rotate vectors consistently
+    ur = u2 * c - v2 * s
+    vr = u2 * s + v2 * c
+
+    return ur, vr
+
 
 def apply_coriolis(u, v, lat_grid, coriolis_fraction):
     """Rotate the wind field rightward in NH and leftward in SH."""

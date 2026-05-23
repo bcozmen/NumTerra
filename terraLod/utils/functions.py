@@ -22,8 +22,9 @@ def get_grid(lim = (0, 1, 0, 1), shape = (2048, 2048)):
     y = np.linspace(lim[2], lim[3], shape[1])
     return np.meshgrid(x, y, indexing='ij')
 
-def get_slope(height_map, sea_level, cell_sizes, scale_factor=1.0):
-    height_map = np.clip(height_map - sea_level, 0, None)  # Treat anything below sea level as sea level for slope purposes
+def get_slope(height_map, cell_sizes, sea_level = None, scale_factor=1.0):
+    if sea_level is not None:
+        height_map = np.clip(height_map - sea_level, 0, None)  # Treat anything below sea level as sea level for slope purposes
     height_map = height_map * scale_factor
 
 

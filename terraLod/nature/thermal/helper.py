@@ -28,7 +28,7 @@ def season_phase(season):
 
 def _latitude_mean_temperature(latitude):
     lat_abs = abs(latitude)
-    return 50.0 * np.cos(np.radians(lat_abs)) - 23.0  # Ranges from 17°C at equator to -10°C at poles
+    return 50.0 * np.cos(np.radians(lat_abs)) - 27.0  # Ranges from 17°C at equator to -10°C at poles
 
 def _latitude_seasonal_amplitude(latitude):
     lat_abs = abs(latitude)

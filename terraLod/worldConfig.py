@@ -16,10 +16,10 @@ class WorldConfig:
     max_altitude : float = 3000.0 #max altitude in meters
     max_size : float = 200_000.0 #world size in meters
     
-    latitude : float = 30 #latitude in degrees, used for temperature gradient and climate
+    latitude : float = 38 #latitude in degrees, used for temperature gradient and climate
     hour : float = 14 #hour of the day, used for sun position and lighting
     
-    season : str = "spring" #season, used for sun position and lighting
+    season : str = "autumn" #season, used for sun position and lighting
     season_to_declination: dict = field(default_factory=lambda: {
         "spring": 10.0, "summer": 23.44, "autumn": -10.0, "winter": -23.44
     })
@@ -110,6 +110,10 @@ class World:
         plotter = self['model_plotter']
         if keys is None:
             plotter.plot_all(**kwargs)
+        elif keys == "wind":
+            keys = "height"
+            kwargs['show_wind'] = True
+            plotter.plot(keys, **kwargs)
         else:
             plotter.plot(keys, **kwargs)
 
@@ -124,6 +128,7 @@ class World:
             if key == 'model_terrain': continue  # Ensure terrain runs first for slope calculations
             elif key == 'model_plotter': continue  # Plotter should run last to visualize all maps
             model()
+        
 
     def __setitem__(self, key, value):
         if key.startswith("model_"):
@@ -139,13 +144,13 @@ class World:
             value =  FastInterpolator(value, order=1, can_call=can_call)
         self.maps[key] = value
         if key == "height":
-            slope, grad_i, grad_j = get_slope(value(), self["sea_level"](), self.cell_size, self.worldConfig.max_altitude)
+            slope, grad_i, grad_j = get_slope(value(), self.cell_size, sea_level = None, scale_factor = self.worldConfig.max_altitude)
             self.maps["slope"] = FastInterpolator(slope, order=1, can_call=can_call)
             self.maps["grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
             self.maps["grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
 
         if key == "temperature":
-            slope, grad_i, grad_j = get_slope(value(), self["sea_level"](), self.cell_size, self.worldConfig.max_altitude)
+            slope, grad_i, grad_j = get_slope(value(), self.cell_size, sea_level = None, scale_factor = self.worldConfig.max_altitude)
             self.maps["temp_grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
             self.maps["temp_grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
 
