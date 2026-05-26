@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.ndimage import gaussian_filter
 
-from terraLod.utils import timeit, FastInterpolator, get_lat_grid, get_water_masks
+from terraLod.utils import timeit, get_lat_grid, get_water_masks
 
 from .helper import get_prevailing_wind, apply_rotation, normalize_mean_and_cap, apply_warp
 
@@ -47,14 +47,14 @@ class Wind:
 
     ### ======== Maps Management ==========
     def set_maps(self, wind_map):
-        self.worldConfig["wind"] = FastInterpolator(wind_map, order=1)
+        self.worldConfig["wind"] = wind_map
     
     def get_maps(self):
         sea_mask, lake_mask, river_mask = get_water_masks(self.worldConfig)
         temperature = self.worldConfig["temperature"]()
         
-        thermal_i, thermal_j = self.worldConfig["temp_grad_i"](), self.worldConfig["temp_grad_j"]()
-        height_gradient_i, height_gradient_j = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
+        thermal_i, thermal_j = self.worldConfig["temperature_grad_i"](), self.worldConfig["temperature_grad_j"]()
+        height_gradient_i, height_gradient_j = self.worldConfig["height_grad_i"](), self.worldConfig["height_grad_j"]()
         
         return sea_mask, lake_mask, river_mask, temperature, thermal_i, thermal_j, height_gradient_i, height_gradient_j
 

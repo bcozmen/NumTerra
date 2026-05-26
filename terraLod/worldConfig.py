@@ -5,11 +5,24 @@ from functools import cached_property
 from abc import ABC, abstractmethod
 
 from terraLod.utils import get_grid, get_slope, get_cell_size
-from terraLod.utils import FastInterpolator, DummyInterpolator
+from terraLod.utils import Interpolator, DummyInterpolator
 import matplotlib.pyplot as plt
 
 from terraLod.nature import Terrain, Thermal, Wind, Humidity,  Hydro
 from terraLod import Plotter
+
+@dataclass
+class InterpConfig:
+    height : int = 3
+    requires_grad : list = field(default_factory=lambda: ["height", "temperature"])
+
+    def __getitem__(self,key):
+        if hasattr(self, key):
+            return getattr(self, key)
+        elif key.endswith("mask"):
+            return 0
+        return 1
+
 @dataclass
 class WorldConfig:
     size_exponent: int = 9
@@ -32,6 +45,7 @@ class WorldConfig:
     init_models : list = field(default_factory=lambda: [Terrain])
     iterative_models : list = field(default_factory=lambda: [Thermal, Wind, Humidity])
     plotter : object = Plotter
+    interp_config : object = field(default_factory=InterpConfig)
 
 class Time():
     seasons = ["spring", "summer", "autumn", "winter"]
@@ -136,30 +150,28 @@ class World:
         else:             
             self._set_map(key, value)
 
+
+    def _set_grad(self, key, value, can_call):
+        if not key in self.worldConfig.interp_config.requires_grad:
+            return
+        slope, grad_i, grad_j = get_slope(value, self.cell_size, sea_level = None, scale_factor = self.worldConfig.max_altitude)
+        self.maps[key + "_grad_i"] = Interpolator(grad_i, order=self.worldConfig.interp_config[key + "_grad_i"], can_call=can_call)
+        self.maps[key + "_grad_j"] = Interpolator(grad_j, order=self.worldConfig.interp_config[key + "_grad_j"], can_call=can_call)
     def _set_map(self, key, value):
         can_call = self.whole_world  # Only allow interpolation if this is the whole world (precomputed maps)
-        if isinstance(value, FastInterpolator):
-            value.update() # Ensure the interpolator is initialized with the new data
+        if key in self.maps:
+            self.maps[key].update(value) # Update existing interpolator with new data
         else:
-            value =  FastInterpolator(value, order=1, can_call=can_call)
-        self.maps[key] = value
-        if key == "height":
-            slope, grad_i, grad_j = get_slope(value(), self.cell_size, sea_level = None, scale_factor = self.worldConfig.max_altitude)
-            self.maps["slope"] = FastInterpolator(slope, order=1, can_call=can_call)
-            self.maps["grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
-            self.maps["grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
+            self.maps[key] = Interpolator(value, order=self.worldConfig.interp_config[key], can_call=can_call)
 
-        if key == "temperature":
-            slope, grad_i, grad_j = get_slope(value(), self.cell_size, sea_level = None, scale_factor = self.worldConfig.max_altitude)
-            self.maps["temp_grad_i"] = FastInterpolator(grad_i, order=1, can_call=can_call)
-            self.maps["temp_grad_j"] = FastInterpolator(grad_j, order=1, can_call=can_call)
+        self._set_grad(key, value, can_call)
 
 
     def __getitem__(self, key):
         if key in self.models:
             return self.models[key]
         if key in self.maps:
-            return self.maps[key].copy()
+            return self.maps[key]
 
         shape = self.size
         if key == "wind":

@@ -34,7 +34,7 @@ Fill-spill-incise mechanism
 from dataclasses import dataclass
 import numpy as np
 
-from terraLod.utils import FastInterpolator, timeit
+from terraLod.utils import Interpolator, timeit
 
 from .numba import (
     compute_mfd_weights,
@@ -237,7 +237,7 @@ class Hydro:
         # Wind, Thermal, and Humidity see the geomorphically-evolved terrain.
         # ------------------------------------------------------------------
         new_height = np.clip(self._base_height + self.height_erosion, 0.0, 1.0)
-        wc["height"] = FastInterpolator(new_height.astype(np.float32), order=1, can_call=True)
+        wc["height"] = Interpolator(new_height.astype(np.float32), order=1, can_call=True)
 
         # ------------------------------------------------------------------
         # Derive masks and publish all hydro maps.
@@ -263,13 +263,13 @@ class Hydro:
             (avg_discharge > river_thresh) & ~sea_mask & ~lake_mask
         )
 
-        wc["lake_mask"]   = FastInterpolator(lake_mask.astype(bool),
+        wc["lake_mask"]   = Interpolator(lake_mask.astype(bool),
                                              order=0, can_call=True)
-        wc["river_mask"]  = FastInterpolator(river_mask.astype(bool),
+        wc["river_mask"]  = Interpolator(river_mask.astype(bool),
                                              order=0, can_call=True)
-        wc["water_depth"] = FastInterpolator(self.water_depth.astype(np.float32),
+        wc["water_depth"] = Interpolator(self.water_depth.astype(np.float32),
                                              order=1, can_call=True)
-        wc["discharge"]   = FastInterpolator(avg_discharge.astype(np.float32),
+        wc["discharge"]   = Interpolator(avg_discharge.astype(np.float32),
                                              order=1, can_call=True)
 
         n_lake  = int(lake_mask.sum())

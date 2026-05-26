@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter, binary_dilation
 
-from terraLod.utils import normalize, get_grid, FastInterpolator, timeit
+from terraLod.utils import normalize, get_grid, timeit
 
 
 from ..noise.noiseGenerator import NoiseGenerator
@@ -40,8 +40,8 @@ class Terrain:
 
     ### ========== Map Management ==========
     def set_maps(self, height_map, sea_mask, sea_level):
-        self.worldConfig["height"] = FastInterpolator(height_map, order=3)
-        self.worldConfig["sea_mask"] = FastInterpolator(sea_mask, order=0)
+        self.worldConfig["height"] = height_map
+        self.worldConfig["sea_mask"] = sea_mask
         self.worldConfig["sea_level"] = sea_level
 
     def get_maps(self):
@@ -64,15 +64,13 @@ class Terrain:
         #erode = self.erode(height_map)
 
         height = normalize(gaussian_filter(height_map, sigma=1))
-        height_interp = FastInterpolator(height, order=3)
 
-        return height_interp
+        return height
 
     def _init_sea_map(self, height_map):
-        height = height_map()
+        height = height_map
         sea_level = np.percentile(height, self.worldConfig.sea_level_percentile * 100)
         sea_mask = detect_sea(height, sea_level)
-        sea_mask = FastInterpolator(sea_mask, order=0)
         return sea_mask, sea_level
 
     ## ---- Generation ----

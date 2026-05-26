@@ -2,7 +2,7 @@ from scipy.ndimage import gaussian_filter
 from dataclasses import dataclass
 import numpy as np
 
-from terraLod.utils import FastInterpolator, timeit, get_lat_grid, get_water_masks
+from terraLod.utils import timeit, get_lat_grid, get_water_masks
 
 
 from .helper import get_itcz, humidity_capacity
@@ -74,10 +74,10 @@ class Humidity:
     ### ========== Map Management ==========
 
     def set_maps(self, humidity_map, rain_map, soil_map, runoff_map):
-        self.worldConfig["humidity"]      = FastInterpolator(humidity_map, order=1) 
-        self.worldConfig["rain"]          = FastInterpolator(rain_map,     order=1)
-        self.worldConfig["soil_moisture"] = FastInterpolator(soil_map,     order=1)
-        self.worldConfig["runoff"]        = FastInterpolator(runoff_map,   order=1)
+        self.worldConfig["humidity"]      = humidity_map
+        self.worldConfig["rain"]          = rain_map
+        self.worldConfig["soil_moisture"] = soil_map
+        self.worldConfig["runoff"]        = runoff_map
     
     def get_maps(self):
         sea, lake, river = get_water_masks(self.worldConfig)
@@ -85,7 +85,7 @@ class Humidity:
         wind = self.worldConfig["wind"]() 
         sun = self.worldConfig["sun"]() 
 
-        grad_i, grad_j = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
+        grad_i, grad_j = self.worldConfig["height_grad_i"](), self.worldConfig["height_grad_j"]()
         
         humidity = self.worldConfig["humidity"]() if "humidity" in self.worldConfig.maps else (humidity_capacity(temperature) * 0.5)
         soil_moisture = self.worldConfig["soil_moisture"]() if "soil_moisture" in self.worldConfig.maps else (np.ones_like(temperature) * self.config.soil_capacity * 0.4)

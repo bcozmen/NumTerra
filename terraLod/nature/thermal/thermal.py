@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from .helper import get_temperature_grid, get_water_cooling, get_sun_heating, season_phase
 
-from terraLod.utils import FastInterpolator, timeit, get_water_masks
+from terraLod.utils import  timeit, get_water_masks
 
 
 #TODO -
@@ -52,21 +52,20 @@ class Thermal:
 
     @timeit(label="Thermal Generation")
     def generate(self, area):
-        """Samples sub-regional grids from the precomputed global interpolators."""
         area["temperature"] = self.worldConfig["temperature"](area.points).reshape(area.size)
         area["sun"] = self.worldConfig["sun"](area.points).reshape(area.size)
 
     ### ======== Maps Management ==========
     def set_maps(self, temperature_map, sun_map):
-        self.worldConfig["temperature"] = FastInterpolator(temperature_map, order=1) 
-        self.worldConfig["sun"] = FastInterpolator(sun_map, order=1)
+        self.worldConfig["temperature"] = temperature_map
+        self.worldConfig["sun"] = sun_map
 
     def get_maps(self):
         sea_mask, lake_mask, river_mask = get_water_masks(self.worldConfig)
         sea_level = self.worldConfig["sea_level"]()
 
         height = self.worldConfig["height"]()
-        di, dj = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
+        di, dj = self.worldConfig["height_grad_i"](), self.worldConfig["height_grad_j"]()
         sun = self.worldConfig["sun"]()
 
         return sea_mask, lake_mask, river_mask, sea_level, height, sun, di, dj
@@ -114,7 +113,7 @@ class Thermal:
         season = self.worldConfig.season
 
         solar_vectors = self.worldConfig.solar_vectors
-        di, dj = self.worldConfig["grad_i"](), self.worldConfig["grad_j"]()
+        di, dj = self.worldConfig["height_grad_i"](), self.worldConfig["height_grad_j"]()
 
         phase = season_phase(season)
 

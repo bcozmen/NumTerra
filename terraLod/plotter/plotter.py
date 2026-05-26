@@ -239,7 +239,7 @@ class Plotter:
             return
         sea_mask = self.world["sea_mask"]().astype(bool)
 
-        height_mask = self.world["height"]()
+        height_mask = self.world["height"]().copy()
         height_mask[~sea_mask] = np.nan  # Mask out non-sea areas for accurate coloring
         height_mask /= np.nanmax(height_mask)  # Normalize to [0, 1] based on sea depth
         height_mask = 1 - height_mask  # Invert so deeper water is darker
