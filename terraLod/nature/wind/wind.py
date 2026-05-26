@@ -4,8 +4,11 @@ from scipy.ndimage import gaussian_filter
 
 from terraLod.utils import timeit, get_lat_grid, get_water_masks
 
-from .helper import get_prevailing_wind, apply_rotation, normalize_mean_and_cap, apply_warp, soft_cap
-from .numba import advect_numba_multi
+from .helper import get_prevailing_wind, get_prevailing_wind_base, apply_rotation, normalize_mean_and_cap
+from .numba import advect_numba_multi, get_terrain_deflection_numba
+
+from terraLod.utils import timeit
+
 
 @dataclass
 class WindConfig:
@@ -22,11 +25,12 @@ class WindConfig:
     rotation_sigma:     float = 60.0  # Standard deviation for random rotation of prevailing winds in degrees. Increase for more chaotic global patterns.
 
 class Wind:
-    @timeit(label="Wind Initialization")
     def __init__(self, worldConfig):
         self.worldConfig = worldConfig
         self.worldConfig["model_wind"] = self
         self.config = WindConfig()
+        lat_grid = get_lat_grid(self.worldConfig.latitude, self.worldConfig.size, self.worldConfig.max_size)
+        self._prevailing_wind_base = get_prevailing_wind_base(self.worldConfig, lat_grid)
 
         self.run()
 
@@ -35,13 +39,11 @@ class Wind:
         else: self.generate(area)
 
     #### ========== Simulation & Generation ==========
-
-    @timeit(label="Wind Simulation")
+    @timeit(name="Wind Simulation")    
     def run(self):
         wind = self._init_wind()
         self.set_maps(wind)
 
-    @timeit(label="Wind Generation")
     def generate(self, area):
         grid, points, size = area.grid, area.points, area.size
         area["wind"] = self.worldConfig["wind"](points).reshape(size + (2,))
@@ -62,33 +64,15 @@ class Wind:
     ### ======== Wind Map Initialization Core ==========
 
     def _get_terrain_deflection(self, base_i, base_j, height_gradient_i, height_gradient_j):
-        grad_norm = np.sqrt(height_gradient_i**2 + height_gradient_j**2) + 1e-6
-        grad_i, grad_j = height_gradient_i / grad_norm, height_gradient_j / grad_norm
-
-        wind_slope_into = (base_i * grad_i) + (base_j * grad_j)
-        blocking = np.maximum(wind_slope_into, 0)
-
-        # FIX: True perpendicular tangent vector
-        tangent_i = -grad_j
-        tangent_j = grad_i
-        
-        # FIX: Dynamically orient tangent to match the incoming wind's flow
-        wind_dot_tangent = (base_i * tangent_i) + (base_j * tangent_j)
-        side_sign = np.where(wind_dot_tangent >= 0, 1.0, -1.0)
-        tangent_i *= side_sign
-        tangent_j *= side_sign
-
-        # Now this cleanly cancels uphill flow and diverts it sideways
-        terrain_i = (- blocking * grad_i) + (blocking * 0.6 * tangent_i)
-        terrain_j = (- blocking * grad_j) + (blocking * 0.6 * tangent_j)
-        
+        terrain_i, terrain_j = get_terrain_deflection_numba(base_i, base_j, height_gradient_i, height_gradient_j)
         return normalize_mean_and_cap(terrain_i, terrain_j, self.config.soft_cap_speed, self.config.max_wind_speed)
+        
     def _init_wind(self):
         sea_mask, lake_mask, river_mask, temperature, thermal_i, thermal_j, height_gradient_i, height_gradient_j = self.get_maps()
         lat_rows = get_lat_grid(self.worldConfig.latitude, self.worldConfig.size, self.worldConfig.max_size)   # degrees, shape (rows,)
         
         # 1. Get prevailing wind (Randomly rotated)
-        prev_j, prev_i = get_prevailing_wind(self.worldConfig, lat_rows, rotation_sigma=self.config.rotation_sigma)
+        prev_j, prev_i = get_prevailing_wind(self.worldConfig, self._prevailing_wind_base, rotation_sigma=self.config.rotation_sigma)  # Note the order swap to get (i,j) from (u,v)
    
         # 2. Combine thermal and prevailing to get base wind
         thermal_i, thermal_j = normalize_mean_and_cap(thermal_i, thermal_j, self.config.soft_cap_speed, self.config.max_wind_speed)

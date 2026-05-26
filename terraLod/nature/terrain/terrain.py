@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.ndimage import gaussian_filter, binary_dilation
 
-from terraLod.utils import normalize, get_grid, timeit
+from terraLod.utils import normalize, get_grid
 
 
 from ..noise.noiseGenerator import NoiseGenerator
@@ -9,7 +9,6 @@ from .numba import detect_sea
 
 
 class Terrain:
-    @timeit(label="Terrain Initialization")
     def __init__(self, worldConfig ):
         self.worldConfig = worldConfig
         self.worldConfig["model_terrain"] = self
@@ -23,7 +22,6 @@ class Terrain:
 
     #### ========== Simulation & Generation ==========
     
-    @timeit(label="Terrain Simulation")
     def run(self):
         if self.noise_generator is not None:
             raise ValueError("Terrain already initialized. To re-run the simulation, create a new instance of Terrain.")
@@ -31,7 +29,6 @@ class Terrain:
         height_map, sea_mask, sea_level = self._init_maps()
         self.set_maps(height_map, sea_mask, sea_level)
     
-    @timeit(label="Terrain Generation")
     def generate(self, area):
         grid, points, size = area.grid, area.points, area.size
         base = self.worldConfig["height"](points).reshape(size)

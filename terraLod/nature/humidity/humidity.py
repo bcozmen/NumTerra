@@ -2,7 +2,7 @@ from scipy.ndimage import gaussian_filter
 from dataclasses import dataclass
 import numpy as np
 
-from terraLod.utils import timeit, get_lat_grid, get_water_masks
+from terraLod.utils import get_lat_grid, get_water_masks, timeit
 
 
 from .helper import get_itcz, humidity_capacity
@@ -45,7 +45,6 @@ class HumidityConfig:
 
 
 class Humidity:
-    @timeit(label="Humidity Initialization")
     def __init__(self, worldConfig):
         self.worldConfig = worldConfig
         self.worldConfig["model_humidity"] = self
@@ -57,13 +56,11 @@ class Humidity:
         else: self.generate(area)
 
     #### ========== Simulation & Generation ==========
-
-    @timeit(label="Humidity Simulation")
+    @timeit(name="Humidity Simulation")
     def run(self):
         humidity_map, rain_map, soil_map, runoff_map = self._simulate_climate()
         self.set_maps(humidity_map, rain_map, soil_map, runoff_map)
 
-    @timeit(label="Humidity Generation")
     def generate(self, area):
         pts, size = area.points, area.size
         area["humidity"]      = self.worldConfig["humidity"](pts).reshape(size)
@@ -102,6 +99,10 @@ class Humidity:
         runoff = np.zeros_like(temperature, dtype=np.float32)
 
         speed_i, speed_j = w_i * self.config.cells_per_ms_per_iter, w_j * self.config.cells_per_ms_per_iter
+        #print("Max wind advection per iteration (cells):", np.max(np.sqrt(speed_i**2 + speed_j**2)))
+        #print("Mean wind advection per iteration (cells):", np.mean(np.sqrt(speed_i**2 + speed_j**2)))
+        #print(f"Max advection allowed per iteration (cells): {self.config.max_advection_cells:.2f}")
+
         itcz = get_itcz(get_lat_grid(self.worldConfig.latitude, temperature.shape, self.worldConfig.max_size))
 
         inv_iter = 1.0 / self.config.iterations
@@ -113,8 +114,9 @@ class Humidity:
                 temperature, sun, w_i, w_j, sea_m, lake_m, river_m, soil_moisture,
                 self.config.evaporation_rate, self.config.land_evaporation,
                 self.config.sea_evaporation, self.config.lake_evaporation,
-                self.config.river_evaporation, self.config.soil_capacity, inv_iter)
-
+                self.config.river_evaporation, self.config.soil_capacity, inv_iter
+            )
+            
             for _ in range(self.config.advection_iterations):
                 humidity = advect_numba(humidity, speed_i, speed_j, self.config.max_advection_cells)
             

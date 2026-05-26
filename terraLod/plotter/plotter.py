@@ -7,7 +7,6 @@ from matplotlib.colors import Normalize, LogNorm, PowerNorm, LinearSegmentedColo
 from matplotlib.ticker import LogFormatterMathtext, LogLocator
 import matplotlib.colors as mcolors
 
-from terraLod.utils import timeit
 
 from .config import LayerSpec, PlotterConfig, _default_layer_specs
 
@@ -158,7 +157,6 @@ class Plotter:
             norm = Normalize(vmin=vmin, vmax=vmax)
         return norm
     # ------ Rendering Helpers ------
-    @timeit(label="Map Rendering")
     def _render_layer(self, key, ax, opts, spec):
         data = self.world[key]().copy()
 
@@ -178,7 +176,6 @@ class Plotter:
             alpha = 0.5 if key == "height" else 0.1
             ax.imshow(1 - sun, cmap="gray", alpha=alpha, origin=self.origin)
     
-    @timeit(label="Contour Rendering")
     def _render_contour(self, opts, ax, key):
         if opts.get("show_contour", True):
             h = self.world["height"]() - self.world["sea_level"]()
@@ -208,7 +205,6 @@ class Plotter:
         colors = cmap(np.arange(cmap.N))
         colors[:, :3] *= factor  # Darken RGB channels
         return mcolors.ListedColormap(colors)
-    @timeit(label="Wind Rendering")
     def _render_wind(self, opts, ax, key, spec):
         max_wind = 0
         if opts.get("show_wind", False) and "wind" in self.world.maps:

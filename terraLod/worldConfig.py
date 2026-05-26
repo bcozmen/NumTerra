@@ -8,8 +8,9 @@ from terraLod.utils import get_grid, get_slope, get_cell_size
 from terraLod.utils import Interpolator
 import matplotlib.pyplot as plt
 
-from terraLod.nature import Terrain, Thermal, Wind, Humidity,  Hydro
+from terraLod.nature import Terrain, Thermal, Wind, Humidity
 from terraLod import Plotter
+
 
 from .time import Time
 @dataclass

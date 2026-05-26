@@ -1,8 +1,8 @@
 from dataclasses import dataclass, field
 import numpy as np
-from .helper import get_temperature_grid, get_water_cooling, get_sun_heating, season_phase
+from .helper import get_temperature_grid, get_sea_cooling, get_sun_heating, season_phase
 
-from terraLod.utils import  timeit, get_water_masks
+from terraLod.utils import  get_water_masks, timeit
 from scipy.ndimage import gaussian_filter
 
 
@@ -31,11 +31,12 @@ class ThermalConfig:
     blur_sigma: float = 10.0                   # Smoothing applied to temperature map to prevent extreme spikes and create more natural transitions.
 
 class Thermal:
-    @timeit(label="Thermal Initialization")
     def __init__(self, worldConfig):
         self.config = ThermalConfig()
         self.worldConfig = worldConfig
         self.worldConfig["model_thermal"] = self
+
+        self.water_buffer_effect, self.continentality = None, None
         self.run()
         
     def __call__(self, area=None):
@@ -45,13 +46,11 @@ class Thermal:
             self.generate(area)
 
     #### ========== Simulation & Generation ==========
-
-    @timeit(label="Thermal Simulation")
+    @timeit(name="Thermal Simulation")
     def run(self):
         temperature, sun = self._init_temperature_map()
         self.set_maps(temperature, sun)
 
-    @timeit(label="Thermal Generation")
     def generate(self, area):
         area["temperature"] = self.worldConfig["temperature"](area.points).reshape(area.size)
         area["sun"] = self.worldConfig["sun"](area.points).reshape(area.size)
@@ -84,10 +83,9 @@ class Thermal:
         altitude_effect = ((altitude * self.worldConfig.max_altitude) / 1000.0) * self.config.lapse_rate
 
         # 3. Microclimate Alterations (Water Buffers & Continentality grids)
-        water_buffer_effect, continentality = get_water_cooling(self.worldConfig, self.config)
-        if self.config.blur_sigma > 0:
-            water_buffer_effect = gaussian_filter(water_buffer_effect, sigma=self.config.blur_sigma)
-            continentality = gaussian_filter(continentality, sigma=self.config.blur_sigma)
+        if self.water_buffer_effect is None or self.continentality is None:
+             self.water_buffer_effect, self.continentality = get_sea_cooling(self.worldConfig, self.config, sea_mask)
+        
 
         # 4. Aspect/Hillshade Solar Radiative Heating
         sun = get_sun_heating(di, dj, self.worldConfig.latitude, self.worldConfig.time.declination, self.worldConfig.time.solar_vectors)
@@ -95,12 +93,12 @@ class Thermal:
         sun_effect[sea_mask] = 0.0  # No solar heating on water cells
 
         # 5. Seasonal Swing Modulation by Continentality & Water Buffers
-        thermal_damping = np.clip(1.0 - (0.8 * water_buffer_effect) / (self.config.cooling_effects['sea'][0] + 1e-5), 0.2, 1.0)  # Damping factor between 0.5 and 1.0
-        effective_seasonal_swing = (temp_delta * (1.0 + continentality)) * thermal_damping
+        thermal_damping = np.clip(1.0 - (0.8 * self.water_buffer_effect) / (self.config.cooling_effects['sea'][0] + 1e-5), 0.2, 1.0)  # Damping factor between 0.5 and 1.0
+        effective_seasonal_swing = (temp_delta * (1.0 + self.continentality)) * thermal_damping
 
         # 6. Marine Thermal Inertia Drift
         hemisphere_sign = np.where(self.worldConfig.latitude >= 0, 1, -1)
-        marine_drift = (phase * hemisphere_sign * self.config.marine_drift_amplitude) * (water_buffer_effect / self.config.cooling_effects['sea'][0])  # Max shift of 6°C at the coast, tapering off with distance from water
+        marine_drift = (phase * hemisphere_sign * self.config.marine_drift_amplitude) * (self.water_buffer_effect / self.config.cooling_effects['sea'][0])  # Max shift of 6°C at the coast, tapering off with distance from water
         temp_mean_shifted = temp_mean + marine_drift
 
         # 7. Planetary Feedback Ticks (e.g. latent heat from rain, greenhouse effect from humidity) could be added here as additional layers

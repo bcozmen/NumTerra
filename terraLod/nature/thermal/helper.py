@@ -34,26 +34,18 @@ def _latitude_seasonal_amplitude(latitude):
     lat_abs = np.abs(latitude)
     return 2.0 + (27.0 / 90.0) * lat_abs 
 
+def get_sea_cooling(worldConfig, config, sea_mask):
+    water_distance = get_normalized_distance_to_mask(sea_mask, worldConfig.cell_size[0], config.cooling_effects['sea'][1]) # Normalize distance to a 200km scale
+    water_distance = np.exp(-water_distance)  # Exponential decay for smoother transition
+    cooling_effect = config.cooling_effects['sea'][0] * water_distance
 
-
-def get_water_cooling(worldConfig, config):
-    #mask true = water, false = land
-    masks = get_water_masks(worldConfig)
-    cooling_effect = np.zeros(masks[0].shape) # initialize cooling effect map
-    continentality = np.zeros(masks[0].shape) # placeholder for future continentality effect
-    for mask, key in zip(masks, ['sea', 'river', 'lake']):
-        if not np.any(mask):
-            continue  # skip if no cells of this type
-
-        water_distance = get_normalized_distance_to_mask(mask, worldConfig.cell_size[0], config.cooling_effects[key][1]) # Normalize distance to a 200km scale
-        water_distance = np.exp(-water_distance)  # Exponential decay for smoother transition
-        cooling_effect += config.cooling_effects[key][0] * water_distance
-        if key == 'sea':
-            water_distance = get_normalized_distance_to_mask(mask, worldConfig.cell_size[0], config.cooling_effects['continentality'][1]) # Normalize distance to a 200km scale
-            water_distance = np.exp(-water_distance)  # Exponential decay for smoother transition
-            continentality = config.cooling_effects['continentality'][0] * (1-water_distance)
+    continent_distance = get_normalized_distance_to_mask(sea_mask, worldConfig.cell_size[0], config.cooling_effects['continentality'][1]) # Normalize distance to a 200km scale
+    continent_distance = np.exp(-continent_distance)  # Exponential decay for smoother transition
+    continentality = config.cooling_effects['continentality'][0] * (1-continent_distance)
 
     return cooling_effect, continentality
+
+
 
 def get_sun_heating(di, dj, latitude, declination, solar_vectors):
     # terrain normal

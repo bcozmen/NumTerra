@@ -3,7 +3,7 @@ import numpy as np
 
 from .noise_params import macro_params, micro_params, ds_params
 
-from terraLod.utils import domain_warp, fbm, diamond_square, normalize, timeit
+from terraLod.utils import domain_warp, fbm, diamond_square, normalize
 
 @dataclass
 class NoiseConfig:
@@ -13,18 +13,15 @@ class NoiseConfig:
     ds_params : dict = field(default_factory=lambda: ds_params)
 
 class NoiseGenerator:
-    @timeit(label="Noise Generator Initialization")
     def __init__(self, seed, config = NoiseConfig()):
         self.seed = seed
         self.config = config
     
-    @timeit(label="Diamond Square Generation")
     def build_ds(self, size):
         params = self.config.ds_params
         offset = 2000
         params['seed'] = self.seed + offset
         return normalize(diamond_square(size, **params))
-    @timeit(label="Noise Generation")
     def get_noise(self, grid, macro = True):
         params = self.config.macro_params if macro else self.config.micro_params
 
