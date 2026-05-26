@@ -5,12 +5,13 @@ from functools import cached_property
 from abc import ABC, abstractmethod
 
 from terraLod.utils import get_grid, get_slope, get_cell_size
-from terraLod.utils import Interpolator, DummyInterpolator
+from terraLod.utils import Interpolator
 import matplotlib.pyplot as plt
 
 from terraLod.nature import Terrain, Thermal, Wind, Humidity,  Hydro
 from terraLod import Plotter
 
+from .time import Time
 @dataclass
 class InterpConfig:
     height : int = 3
@@ -29,10 +30,12 @@ class WorldConfig:
     max_altitude : float = 3000.0 #max altitude in meters
     max_size : float = 200_000.0 #world size in meters
     
-    latitude : float = 38 #latitude in degrees, used for temperature gradient and climate
+    latitude : float = 41. #latitude in degrees, used for temperature gradient and climate
+    longitude : float = 29.
+    timezone_offset : float = 2.0 #hours from UTC, used for solar time correction
     hour : float = 14 #hour of the day, used for sun position and lighting
     
-    season : str = "autumn" #season, used for sun position and lighting
+    season : str = "winter" #season, used for sun position and lighting
     season_to_declination: dict = field(default_factory=lambda: {
         "spring": 10.0, "summer": 23.44, "autumn": -10.0, "winter": -23.44
     })
@@ -47,19 +50,7 @@ class WorldConfig:
     plotter : object = Plotter
     interp_config : object = field(default_factory=InterpConfig)
 
-class Time():
-    seasons = ["spring", "summer", "autumn", "winter"]
-    def __init__(self, worldConfig):
-        self.worldConfig = worldConfig
-        self.current_index = self.seasons.index(worldConfig.season)
 
-    def step(self):
-        self.current_index = (self.current_index + 1) % len(self.seasons)
-        self.worldConfig.season = self.seasons[self.current_index]
-    def get_season(self):
-        return self.seasons[self.current_index]
-    def get_previous_season(self):
-        return self.seasons[(self.current_index - 1) % len(self.seasons)]
 
 class World:
     def __init__(self, config = None, lim = (0, 1, 0, 1), size = (1024, 1024), models = [] ):
@@ -83,6 +74,7 @@ class World:
         self.models = {}
 
         self.time = Time(self)
+        self.time.step(hours=self.hour)  # Set initial time based on config
         self._init_maps()
         
 
@@ -90,35 +82,6 @@ class World:
             model(self)
 
         
-
-    @property
-    def declination(self):
-        return np.radians(self.season_to_declination[self.time.get_season()])
-
-    @property
-    def prev_declination(self):
-        return np.radians(self.season_to_declination[self.time.get_previous_season()])
-
-    @property
-    def solar_vectors(self):
-        declination = self.declination
-        lat = np.radians(self.latitude)
-        hour_angle = np.radians(15.0 * (self.hour - 12.0))
-
-        solar_altitude = np.arcsin(
-            np.sin(lat) * np.sin(declination) +
-            np.cos(lat) * np.cos(declination) * np.cos(hour_angle)
-        )
-        solar_azimuth = np.arctan2(
-            -np.cos(declination) * np.sin(hour_angle),
-            np.cos(lat) * np.sin(declination) - np.sin(lat) * np.cos(declination) * np.cos(hour_angle)
-        )
-
-        sx = np.cos(solar_altitude) * np.sin(solar_azimuth)
-        sy = np.cos(solar_altitude) * np.cos(solar_azimuth)
-        sz = np.sin(solar_altitude)
-
-        return sx, sy, sz
 
     def plot(self, keys = None, **kwargs):
         plotter = self['model_plotter']
@@ -137,7 +100,7 @@ class World:
                 model(self)
 
     def __call__(self):
-        self.time.step()
+        self.time.step(months=1)
         for key, model in self.models.items():
             if key == 'model_terrain': continue  # Ensure terrain runs first for slope calculations
             elif key == 'model_plotter': continue  # Plotter should run last to visualize all maps
@@ -154,7 +117,12 @@ class World:
     def _set_grad(self, key, value, can_call):
         if not key in self.worldConfig.interp_config.requires_grad:
             return
-        slope, grad_i, grad_j = get_slope(value, self.cell_size, sea_level = None, scale_factor = self.worldConfig.max_altitude)
+
+        if key == "height":
+            sea_level = self["sea_level"]()
+        else:
+            sea_level = None
+        slope, grad_i, grad_j = get_slope(value, self.cell_size, sea_level = sea_level, scale_factor = self.worldConfig.max_altitude)
         self.maps[key + "_grad_i"] = Interpolator(grad_i, order=self.worldConfig.interp_config[key + "_grad_i"], can_call=can_call)
         self.maps[key + "_grad_j"] = Interpolator(grad_j, order=self.worldConfig.interp_config[key + "_grad_j"], can_call=can_call)
     def _set_map(self, key, value):
@@ -176,8 +144,9 @@ class World:
         shape = self.size
         if key == "wind":
             shape = shape + (2,)
+        fakeInterp = Interpolator(np.zeros(shape, dtype=np.float32), order=self.worldConfig.interp_config[key], can_call=False)
             
-        return DummyInterpolator(np.zeros(shape, dtype=np.float32))  # Default to zero map if not found
+        return fakeInterp  # Default to zero map if not found
 
 
 

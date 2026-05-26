@@ -102,10 +102,6 @@ class Humidity:
         runoff = np.zeros_like(temperature, dtype=np.float32)
 
         speed_i, speed_j = w_i * self.config.cells_per_ms_per_iter, w_j * self.config.cells_per_ms_per_iter
-        #print("Max wind advection per iteration (cells):", np.max(np.sqrt(speed_i**2 + speed_j**2)))
-        #print("Mean wind advection per iteration (cells):", np.mean(np.sqrt(speed_i**2 + speed_j**2)))
-        #print(f"Max advection allowed per iteration (cells): {self.config.max_advection_cells:.2f}")
-
         itcz = get_itcz(get_lat_grid(self.worldConfig.latitude, temperature.shape, self.worldConfig.max_size))
 
         inv_iter = 1.0 / self.config.iterations
@@ -117,22 +113,11 @@ class Humidity:
                 temperature, sun, w_i, w_j, sea_m, lake_m, river_m, soil_moisture,
                 self.config.evaporation_rate, self.config.land_evaporation,
                 self.config.sea_evaporation, self.config.lake_evaporation,
-                self.config.river_evaporation, self.config.soil_capacity, inv_iter
-            )
-            def plot(map, cmap, title, vmin = None, vmax = None):
-                return
-                import matplotlib.pyplot as plt
-                plt.imshow(map, cmap=cmap, origin='lower', vmin=vmin, vmax=vmax)
-                plt.colorbar(label=title)
-                total = np.mean(map)
-                plt.title(f"{title} (Mean: {total:.2f})")
-                plt.xlabel('Longitude')
-                plt.ylabel('Latitude')
-                plt.show()
-            plot(humidity, cmap='Blues', title='Humidity Before Advection', vmin=0, vmax=20)
-            plot(humidity, cmap='Blues', title='Humidity After Advection', vmin=0, vmax=20)
+                self.config.river_evaporation, self.config.soil_capacity, inv_iter)
+
             for _ in range(self.config.advection_iterations):
                 humidity = advect_numba(humidity, speed_i, speed_j, self.config.max_advection_cells)
+            
             humidity, soil_moisture, rain, runoff = compute_rain_and_update_numba(
                 humidity, cap, evap_frac, w_i, w_j, grad_i, grad_j, sea_m, lake_m, river_m,
                 soil_moisture, rain, runoff, self.config.condensation_rate,

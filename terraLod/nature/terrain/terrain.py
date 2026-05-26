@@ -40,9 +40,9 @@ class Terrain:
 
     ### ========== Map Management ==========
     def set_maps(self, height_map, sea_mask, sea_level):
-        self.worldConfig["height"] = height_map
         self.worldConfig["sea_mask"] = sea_mask
         self.worldConfig["sea_level"] = sea_level
+        self.worldConfig["height"] = height_map
 
     def get_maps(self):
         pass

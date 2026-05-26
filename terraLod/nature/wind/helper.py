@@ -100,10 +100,14 @@ def apply_coriolis(u, v, lat_grid, coriolis_fraction):
     return u_new, v_new
 
 
-
+def soft_cap(u, v, soft_cap_speed, max_speed):
+    speed = np.hypot(u, v)
+    capped_speed = _soft_cap(speed, soft_cap_speed, max_speed)
+    scale = capped_speed / (speed + 1e-5)  # Avoid division by zero
+    return u * scale, v * scale
 def normalize_mean_and_cap(u, v, soft_cap_speed, max_wind_speed):
     speed = np.hypot(u, v)
-    mean_speed = np.mean(speed)
+    mean_speed = np.median(speed)
     mean_speed = max(mean_speed, 1e-5)  # Prevent division by zero for very low speeds
 
     u, v = u / mean_speed, v / mean_speed

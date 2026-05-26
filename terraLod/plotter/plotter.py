@@ -53,7 +53,7 @@ class Plotter:
         for j in range(n_plots, len(axes_flat)):
             fig.delaxes(axes_flat[j])
 
-        title = f"Season : {self.world.time.get_season().capitalize()} | Hour: {self.world.worldConfig.hour}:00 | Latitude: {self.world.worldConfig.latitude}°"
+        title = f"Season : {self.world.time} | Latitude: {self.world.worldConfig.latitude}°"
 
         fig.suptitle(title, fontsize=16)
         plt.tight_layout()
@@ -256,7 +256,7 @@ class Plotter:
             #"lake": self.world["lake_mask"]().astype(bool),
         }
 
-        sx, sy, sz = self.world.worldConfig.solar_vectors
+        sx, sy, sz = self.world.worldConfig.time.solar_vectors
         L = np.array([sx, sy, sz])
         V = np.array([0.0, 0.0, 1.0])
         H = L + V

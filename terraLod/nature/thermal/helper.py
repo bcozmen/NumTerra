@@ -10,9 +10,9 @@ def get_temperature_grid(size, max_size, latitude, phase) -> np.ndarray:
     rows, cols = size
     lat_grid = get_lat_grid(latitude, size, max_size)
 
-    mean_temp = _latitude_mean_temperature(latitude)
-    seasonal_amplitude = _latitude_seasonal_amplitude(latitude)
-    hemisphere_sign = np.where(latitude >= 0, 1, -1)  # +1 for Northern Hemisphere, -1 for Southern Hemisphere
+    mean_temp = _latitude_mean_temperature(lat_grid)
+    seasonal_amplitude = _latitude_seasonal_amplitude(lat_grid)
+    hemisphere_sign = np.where(lat_grid >= 0, 1, -1)  # +1 for Northern Hemisphere, -1 for Southern Hemisphere
 
     seasonal_offset = phase * seasonal_amplitude * hemisphere_sign
 
@@ -27,11 +27,11 @@ def season_phase(season):
     return 0.0
 
 def _latitude_mean_temperature(latitude):
-    lat_abs = abs(latitude)
+    lat_abs = np.abs(latitude)
     return 50.0 * np.cos(np.radians(lat_abs)) - 27.0  # Ranges from 17°C at equator to -10°C at poles
 
 def _latitude_seasonal_amplitude(latitude):
-    lat_abs = abs(latitude)
+    lat_abs = np.abs(latitude)
     return 2.0 + (27.0 / 90.0) * lat_abs 
 
 

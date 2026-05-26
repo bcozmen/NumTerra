@@ -8,7 +8,7 @@ from .functions import normalize, get_grid, get_slope, get_cell_size, get_lat_gr
 __functions = ['normalize', 'get_grid', 'get_slope', 'get_cell_size', 'get_lat_grid', 'get_normalized_distance_to_mask', 'get_water_masks']
 from .noise import diamond_square, domain_warp, fbm
 __noise = ['diamond_square', 'domain_warp', 'fbm']
-from .interpolator.interpolator import Interpolator, DummyInterpolator
-__interpolator = ['Interpolator', 'DummyInterpolator']
+from .interpolator.interpolator import Interpolator
+__interpolator = ['Interpolator']
 
 __all__ = __timer + __heap + __path_finding + __functions + __noise + __interpolator
