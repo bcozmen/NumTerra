@@ -62,7 +62,7 @@ def get_sun_heating(di, dj, latitude, declination, solar_vectors):
     solar_factor = np.clip(solar_factor, 0.0, 1.0)  # Clamp to daylight only
 
     sun = slope_factor * solar_factor
-    return normalize(sun)
+    return sun
 
 
 def _solar_intensity_factor(latitude, declination):

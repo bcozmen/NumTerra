@@ -47,7 +47,7 @@ class WorldConfig:
     debug : bool = False
 
     init_models : list = field(default_factory=lambda: [Terrain])
-    iterative_models : list = field(default_factory=lambda: [Thermal, Wind, Humidity, Erosion])
+    iterative_models : list = field(default_factory=lambda: [Thermal])#, Wind, Humidity, Erosion])
     plotter : object = Plotter
     interp_config : object = field(default_factory=InterpConfig)
 
