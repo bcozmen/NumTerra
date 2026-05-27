@@ -12,24 +12,24 @@ from .numba import advect_numba, compute_evaporation_numba, compute_rain_and_upd
 class HumidityConfig:
     world_max_size: float              # [meters] Maximum dimension of the simulation world
     cell_size: tuple                   # [meters] Dimensions of a single grid cell (dx, dy)
-    iterations: int = 30               # [count] Number of simulation ticks per generation step
+    iterations: int = 10               # [count] Number of simulation ticks per generation step
 
-    advection_iterations: int = 2             # [count] Number of sub-steps for advection within each main iteration (higher = more accurate but slower)
-    max_advection_percent: float = 0.25 # [fraction, 0-1] Max fraction of world size a 1m/s wind parcel can move over one iterations
-    diffusion_sigma: float = 0.0       # [cells] Gaussian blur radius for humidity smoothing (lower = sharper transitions)
+    advection_iterations: int = 1             # [count] Number of sub-steps for advection within each main iteration (higher = more accurate but slower)
+    max_advection_percent: float = 0.1 # [fraction, 0-1] Max fraction of world size a 1m/s wind parcel can move over one iterations
+    diffusion_sigma: float = 1.0       # [cells] Gaussian blur radius for humidity smoothing (lower = sharper transitions)
     
-    evaporation_rate: float = 6.0     # [multiplier] Base atmospheric evaporation scale (kept low to prevent infinite sea-rain loops)
+    evaporation_rate: float = 3.0     # [multiplier] Base atmospheric evaporation scale. Doubled vs the old cap-based formula because evaporation now scales with the vapour-pressure deficit (cap - humidity), so the effective rate is halved at 50 % RH; 2.0 restores equivalent global moisture flux while still self-limiting near saturation.
     sea_evaporation: float = 1.0       # [multiplier] Evaporation efficiency factor over oceans
     lake_evaporation: float = 0.8      # [multiplier] Evaporation efficiency factor over lakes
     river_evaporation: float = 0.6     # [multiplier] Evaporation efficiency factor over rivers
-    land_evaporation: float = 0.2      # [multiplier] Evaporation efficiency factor over bare land
+    land_evaporation: float = 0.1      # [multiplier] Evaporation efficiency factor over bare land
     
-    rain_humidity_threshold: float = 0.0 # [fraction, 0-1] Relative humidity required before rain triggers (higher = less frequent but more intense)
-    condensation_rate: float = 0.25        # [fraction, 0-1] Proportion of excess humidity condensing into rain per iteration
-    hpa_to_mm_factor: float = 3.0        # [mm / hPa] Scaling factor converting vapor pressure (hPa) to liquid rainfall (mm)
+    rain_humidity_threshold: float = 0.6 # [fraction, 0-1] Relative humidity required before rain triggers (higher = less frequent but more intense)
+    condensation_rate: float = 0.7        # [fraction, 0-1] Proportion of excess humidity condensing into rain per iteration
+    vapor_column_height: float = 6000.0   # [meters] Effective water-vapor column scale for hPa to mm conversion
     
     uplift_scale: float = 1.0          # [multiplier] How strongly terrain slope/uplift forces air upward (higher = dramatic mountain rain)
-    orographic_factor: float = 0.05     # [multiplier] Efficiency of mountains squeezing water out of humid air masses
+    orographic_factor: float = 0.01     # [multiplier] Efficiency of mountains squeezing water out of humid air masses
     
 
     soil_capacity: float = 200.0       # [mm] Maximum amount of water the soil layer can retain
@@ -89,7 +89,7 @@ class Humidity:
         
         return sea, lake, river, temperature, humidity, soil_moisture, wind, sun, grad_i, grad_j
     
-    ## ========= Climate Simulation Core ==========
+    
 
     def _simulate_climate(self):
         sea_m, lake_m, river_m, temperature, humidity, soil_moisture, wind, sun, grad_i, grad_j = self.get_maps()
@@ -109,6 +109,9 @@ class Humidity:
 
         cap = humidity_capacity(temperature)
 
+        # Compute hPa->mm conversion per cell using local temperature
+        hpa_to_mm = 100.0 * self.config.vapor_column_height / (461.0 * (temperature + 273.15))
+
         for iter_ix in range(self.config.iterations):
             evap_frac = compute_evaporation_numba(
                 temperature, sun, w_i, w_j, sea_m, lake_m, river_m, soil_moisture,
@@ -117,20 +120,28 @@ class Humidity:
                 self.config.river_evaporation, self.config.soil_capacity, inv_iter
             )
             
+            pre_adv_mass = np.sum(humidity)
             for _ in range(self.config.advection_iterations):
                 humidity = advect_numba(humidity, speed_i, speed_j, self.config.max_advection_cells)
+            post_adv_mass = np.sum(humidity)
+            if post_adv_mass > 0:
+                humidity *= (pre_adv_mass / post_adv_mass)
             
             humidity, soil_moisture, rain, runoff = compute_rain_and_update_numba(
                 humidity, cap, evap_frac, w_i, w_j, grad_i, grad_j, sea_m, lake_m, river_m,
                 soil_moisture, rain, runoff, self.config.condensation_rate,
                 self.config.orographic_factor, self.config.soil_capacity,
                 itcz, self.config.rain_humidity_threshold,
-                self.config.hpa_to_mm_factor,  self.config.uplift_scale,
+                hpa_to_mm,  self.config.uplift_scale,
                 )
 
 
             if self.config.diffusion_sigma > 0:
+                pre_diff_mass = np.sum(humidity)
                 humidity = gaussian_filter(humidity, sigma=self.config.diffusion_sigma)
+                post_diff_mass = np.sum(humidity)
+                if post_diff_mass > 0:
+                    humidity *= (pre_diff_mass / post_diff_mass)
             
 
         return humidity, rain, soil_moisture, runoff

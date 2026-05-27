@@ -8,7 +8,7 @@ from terraLod.utils import get_grid, get_slope, get_cell_size
 from terraLod.utils import Interpolator
 import matplotlib.pyplot as plt
 
-from terraLod.nature import Terrain, Thermal, Wind, Humidity
+from terraLod.nature import Terrain, Thermal, Wind, Humidity, Erosion
 from terraLod import Plotter
 
 
@@ -28,7 +28,7 @@ class InterpConfig:
 @dataclass
 class WorldConfig:
     size_exponent: int = 9
-    max_altitude : float = 3000.0 #max altitude in meters
+    max_altitude : float = 1000.0 #max altitude in meters
     max_size : float = 200_000.0 #world size in meters
     
     latitude : float = 41. #latitude in degrees, used for temperature gradient and climate
@@ -47,7 +47,7 @@ class WorldConfig:
     debug : bool = False
 
     init_models : list = field(default_factory=lambda: [Terrain])
-    iterative_models : list = field(default_factory=lambda: [Thermal, Wind, Humidity])
+    iterative_models : list = field(default_factory=lambda: [Thermal, Wind, Humidity, Erosion])
     plotter : object = Plotter
     interp_config : object = field(default_factory=InterpConfig)
 
@@ -75,7 +75,6 @@ class World:
         self.models = {}
 
         self.time = Time(self)
-        self.time.step(hours=self.hour)  # Set initial time based on config
         self._init_maps()
         
 
@@ -86,8 +85,8 @@ class World:
 
     def plot(self, keys = None, **kwargs):
         plotter = self['model_plotter']
-        if keys is None:
-            plotter.plot_all(**kwargs)
+        if keys is None or type(keys) == list:
+            plotter.plot_all(keys=keys,**kwargs)
         elif keys == "wind":
             keys = "height"
             kwargs['show_wind'] = True
@@ -100,8 +99,8 @@ class World:
             for model in self.worldConfig.models.values():
                 model(self)
 
-    def __call__(self):
-        self.time.step(months=1)
+    def __call__(self, **kwargs):
+        self.time.step(**kwargs)
         for key, model in self.models.items():
             if key == 'model_terrain': continue  # Ensure terrain runs first for slope calculations
             elif key == 'model_plotter': continue  # Plotter should run last to visualize all maps
@@ -124,6 +123,7 @@ class World:
         else:
             sea_level = None
         slope, grad_i, grad_j = get_slope(value, self.cell_size, sea_level = sea_level, scale_factor = self.worldConfig.max_altitude)
+        self.maps[key + "_slope"] = Interpolator(slope, order=self.worldConfig.interp_config[key + "_slope"], can_call=can_call)
         self.maps[key + "_grad_i"] = Interpolator(grad_i, order=self.worldConfig.interp_config[key + "_grad_i"], can_call=can_call)
         self.maps[key + "_grad_j"] = Interpolator(grad_j, order=self.worldConfig.interp_config[key + "_grad_j"], can_call=can_call)
     def _set_map(self, key, value):

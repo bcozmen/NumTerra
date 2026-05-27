@@ -77,12 +77,7 @@ def normalize_mean_and_cap(u, v, soft_cap_speed, max_wind_speed):
 
     return scale_and_cap_numba(u, v, mean_speed, soft_cap_speed, max_wind_speed)
 
-def _hard_cap(x):
-    return np.minimum(1.0/x, 1.0)
 
-
-def _soft_cap(speed, soft, max_speed, alpha=3.0):
-    return soft_cap_numba(speed, soft, max_speed, alpha)
 
 
 def _mean_zonal_wind(lat_deg):

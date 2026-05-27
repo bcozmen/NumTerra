@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.ndimage import distance_transform_edt
-from terraLod.utils import normalize, get_lat_grid, get_normalized_distance_to_mask, get_water_masks
+from terraLod.utils import normalize, get_lat_grid, get_normalized_distance_to_mask
 
 
 

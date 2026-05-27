@@ -12,7 +12,6 @@ from terraLod.utils import timeit
 
 @dataclass
 class WindConfig:
-
     max_wind_speed:     float = 8.0   # Cap on maximum wind speed in m/s to prevent extreme values from steep gradients.
     soft_cap_speed:    float = 3.0   # Speed at which the soft cap starts to kick in, in m/s. Should be less than max_wind_speed.
     wind_scale:         float = 0.5   # Overall scaling factor for wind speed.
@@ -24,6 +23,9 @@ class WindConfig:
     blur_sigma:         float = 1.0   # Smoothing applied to wind map to prevent rigid 90-degree jagged turns.
     rotation_sigma:     float = 60.0  # Standard deviation for random rotation of prevailing winds in degrees. Increase for more chaotic global patterns.
 
+    advection_iterations: int = 10       # Number of sub-steps for advection within each main iteration (higher = more accurate but slower)
+    advection_speed_factor : float = 2.0 # Multiplier for how strongly wind speed affects advection distance (higher = more aggressive movement of heat/humidity by wind)
+    max_advection_speed: float = 20.0 # Maximum speed in m/s that a wind parcel can be advected in one iteration, to prevent instability from extreme winds.
 class Wind:
     def __init__(self, worldConfig):
         self.worldConfig = worldConfig
@@ -94,11 +96,5 @@ class Wind:
         wind = np.stack([i, j], axis=-1)
 
         return wind
-
-    def _advect(self, speed_i, speed_j, temperature, humidity):
-        maps_combined = np.stack([temperature, humidity], axis=-1)
-        advected = advect_numba_multi(maps_combined, speed_i, speed_j, cap)
-        return advected[..., 0], advected[..., 1]
-
 
 

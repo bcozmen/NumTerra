@@ -26,7 +26,7 @@ class Plotter:
         if keys is None:
             keys = ["height", "wind", "temperature", "humidity", "rain", "soil_moisture", "runoff","sun"]
         
-        n_plots = len(keys) + 1
+        n_plots = len(keys)
         n_rows = (n_plots + 1) // 2
         
         # Pop standard grid figsize out so it isn't passed down downstream to single plot logic

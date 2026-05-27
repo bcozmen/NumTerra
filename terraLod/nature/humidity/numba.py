@@ -57,7 +57,12 @@ def compute_evaporation_numba(temperature, sun, wind_i, wind_j,
 @njit(cache=True, parallel=True)
 def advect_numba(humidity, speed_i, speed_j, max_advection):
     """
-    Semi-Lagrangian advection with standard clamp-to-edge boundaries.
+    Semi-Lagrangian advection with clamp-to-edge boundaries.
+    Uses bilinear interpolation for smooth, low-artifact advection.
+    Bilinear naturally distributes mass smoothly across neighbours,
+    greatly reducing the spurious global mass drift that plagues
+    nearest-neighbour advection (which caused the global rescaler to
+    redistribute moisture from dissipating storms into distant deserts).
     """
     H, W = humidity.shape
     out = np.empty((H, W), dtype=np.float64)
@@ -79,8 +84,7 @@ def advect_numba(humidity, speed_i, speed_j, max_advection):
             fi = i - disp_i
             fj = j - disp_j
 
-            # --- CLAMP FOR SAMPLING SAFETY ---
-            # This safely handles edges without destroying humidity
+            # --- CLAMP back-trace point to grid ---
             if fi < 0.0:
                 fi = 0.0
             elif fi > Hi:
@@ -91,21 +95,28 @@ def advect_numba(humidity, speed_i, speed_j, max_advection):
             elif fj > Wi:
                 fj = Wi
 
-            i0 = int(np.floor(fi))
-            j0 = int(np.floor(fj))
-            
-            # i1 and j1 bounded by max index
-            i1 = min(i0 + 1, Hi)
-            j1 = min(j0 + 1, Wi)
+            # --- Bilinear interpolation ---
+            i0 = int(math.floor(fi))
+            j0 = int(math.floor(fj))
+            i1 = i0 + 1
+            j1 = j0 + 1
+
+            # Clamp upper cell indices (fi already in [0, Hi], so i0 <= Hi;
+            # i1 can be Hi+1 only when fi==Hi, where di==0 anyway, but we
+            # must keep the index in-bounds for Numba's bounds checker)
+            if i1 > Hi:
+                i1 = Hi
+            if j1 > Wi:
+                j1 = Wi
 
             di = fi - i0
             dj = fj - j0
 
             out[i, j] = (
-                humidity[i0, j0] * (1.0 - di) * (1.0 - dj)
-                + humidity[i0, j1] * (1.0 - di) * dj
-                + humidity[i1, j0] * di * (1.0 - dj)
-                + humidity[i1, j1] * di * dj
+                (1.0 - di) * (1.0 - dj) * humidity[i0, j0] +
+                (1.0 - di) * dj          * humidity[i0, j1] +
+                di          * (1.0 - dj) * humidity[i1, j0] +
+                di          * dj          * humidity[i1, j1]
             )
 
     return out
@@ -154,8 +165,8 @@ def compute_rain_and_update_numba(humidity, humidity_cap, evap_frac,
             precip_hpa = min(rain_sat + rain_oro, h_local)
             h_local = max(h_local - precip_hpa, 0.0)
             
-            precip_mm = precip_hpa * hpa_to_mm
-            evap_mm = evap_hpa * hpa_to_mm
+            precip_mm = precip_hpa * hpa_to_mm[i, j]
+            evap_mm = evap_hpa * hpa_to_mm[i, j]
 
             # 5. Hydrology
             s_local, runoff = _hydrology_cell(
@@ -171,14 +182,19 @@ def compute_rain_and_update_numba(humidity, humidity_cap, evap_frac,
 
 @njit(cache=True)
 def _evaporate_cell(humidity, cap, evap_frac, is_sea):
-    """Calculates atmospheric evaporation for a single cell."""
-    evap_hpa = evap_frac * cap
-    local_humidity = humidity + evap_hpa
-    
-    #if is_sea:
-    #    local_humidity = min(local_humidity, 0.88 * cap)
-        
-    return local_humidity, evap_hpa
+    """Calculates atmospheric evaporation for a single cell.
+
+    Uses the vapour-pressure deficit (cap - humidity) as the driving force.
+    Physically: evaporation slows as the air approaches saturation and stops
+    entirely when the air is already saturated.  This naturally prevents the
+    sea→rain→sea loop that produces extreme coastal/ocean precipitation when
+    evaporation is simply proportional to cap regardless of current moisture.
+    """
+    deficit = cap - humidity
+    if deficit < 0.0:
+        deficit = 0.0
+    evap_hpa = evap_frac * deficit
+    return humidity + evap_hpa, evap_hpa
 
 @njit(cache=True)
 def _convective_rain_cell(humidity, cap, condensation_rate, itcz, threshold=0.75):
@@ -191,21 +207,32 @@ def _convective_rain_cell(humidity, cap, condensation_rate, itcz, threshold=0.75
 
 @njit(cache=True)
 def _orographic_effects_cell(humidity, cap, w_i, w_j, g_i, g_j, orographic_factor, itcz, uplift_scale):
-    """Calculates terrain-driven rain and shadow drying for a single cell."""
+    """Calculates terrain-driven rain and shadow drying for a single cell.
+
+    Windward side (uplift > 0): forces condensation → orographic rain.
+    Leeward side  (uplift < 0): adiabatic descent dries the air column
+                                 (rain shadow).  The drying strength is
+                                 symmetric with the windward enhancement so
+                                 the effect is mass-neutral on average.
+    """
     ws = math.hypot(w_i, w_j) + 1e-8
     uplift = (w_i / ws) * g_i + (w_j / ws) * g_j
-    
-    # Numba supports standard math functions
+
     x = uplift_scale * uplift
-    modifier = math.tanh(x) 
-    
+    modifier = math.tanh(x)
+
     rain_oro = 0.0
     adjusted_humidity = humidity
-    
-    if modifier > 0.0:
-        rain_oro = modifier * humidity * orographic_factor * itcz
 
-        
+    if modifier > 0.0:
+        # Windward: squeeze moisture out of the rising air parcel
+        rain_oro = modifier * humidity * orographic_factor * itcz
+    elif modifier < 0.0:
+        # Leeward: descending air warms adiabatically → rain shadow drying
+        # Use the same orographic_factor so the effect is symmetric
+        drying = -modifier * humidity * orographic_factor
+        adjusted_humidity = max(humidity - drying, 0.0)
+
     return rain_oro, adjusted_humidity
 
 @njit(cache=True)

@@ -3,9 +3,9 @@ import numpy as np
 
 def get_water_masks(worldConfig):
     sea_mask = worldConfig["sea_mask"]().astype(bool)
-    river_mask = worldConfig["river_mask"]().astype(bool)
     lake_mask = worldConfig["lake_mask"]().astype(bool)
-    return sea_mask, river_mask, lake_mask
+    river_mask = worldConfig["river_mask"]().astype(bool)
+    return sea_mask, lake_mask, river_mask
 
 
 def normalize(arr, axis = None,vmin = None, vmax = None, range = (0, 1)):
