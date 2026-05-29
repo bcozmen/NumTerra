@@ -1,12 +1,16 @@
 from dataclasses import dataclass, field
 
-from .time import Time
+
 from .area import Area
 from fields.earth import __default_models__ as earth_models
+from fields.time import Time, TimeRegister
+from fields.plotter import WorldRenderer
+
+
 
 @dataclass
 class WorldConfig:
-    size_exponent: int = 9
+    size_exponent: int = 8
     max_altitude : float = 1000.0 #max altitude in meters
     max_size : float = 200_000.0 #world size in meters
     
@@ -20,7 +24,7 @@ class WorldConfig:
     debug : bool = False
 
 
-    init_models : list = field(default_factory=lambda: [Time] + earth_models + [])#, Wind, Humidity, Erosion])
+    init_models : list = field(default_factory=lambda: [Time] + earth_models + [WorldRenderer])#, Wind, Humidity, Erosion])
 
     def __post_init__(self):
         self.size = (2 ** self.size_exponent + 1, 2 ** self.size_exponent + 1)
@@ -30,6 +34,7 @@ class World():
         if worldConfig is None:
             worldConfig = WorldConfig()
         self.__dict__.update(worldConfig.__dict__)
+        self.time_register = TimeRegister()
         
         self.area = Area(self, size = self.size)
         
@@ -48,12 +53,16 @@ class World():
             m = model(self) # initialize the model 
             self.models[m.info['name']] = m
             
-
-
-    def __call__(self, hours = 1):
+    def step(self, hours = 1):
         for _ in range(hours):
             for model in self.models.values():
                 model()
+
+    def report_times(self):
+        self.time_register.report()
+
+    def __call__(self, hours = 1):
+        self.step(hours)
     def __getitem__(self, key):
         if key in self.models:
             return self.models[key]

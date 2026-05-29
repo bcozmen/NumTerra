@@ -12,16 +12,17 @@ map_info = {
         'requires_grad' : True,
         'normalize_sea_level' : True,
         'unit' : 'm',
-        'description' : 'Height map of the terrain'
+        'description' : 'Height map of the terrain',
+        'render' : {'cmap': 'terrain'},  # composite: land=terrain, sea=Blues depth
     },
     'M_sea' : {
         'interp_order' : 0,
-        'description' : 'Boolean mask indicating sea vs land'
+        'description' : 'Boolean mask indicating sea vs land',
     },
     'sea_level' : {
         'interp_order' : 0,
         'unit' : 'm',
-        'description' : 'Height threshold for sea level'
+        'description' : 'Height threshold for sea level',
     },
 }
 

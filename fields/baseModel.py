@@ -11,10 +11,14 @@ class BaseModel(ABC):
 
 
     def __call__(self, area = None):
-        if area is None:
+        is_step = 'step' if area is None else 'generate'
+        self.world.time_register.register(self.__class__.__name__, is_step)
+        if is_step == 'step':
             self.step()
         else:
             self.generate(area)
+        self.world.time_register.deregister(self.__class__.__name__, is_step)
+
 
     ## ========== Simulation & Generation ==========
     def init(self):

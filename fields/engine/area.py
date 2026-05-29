@@ -60,12 +60,12 @@ class Area():
                 grad_value = grad_value - sea_level
                 grad_value[sea_mask] = 0  # Set sea areas to zero
     
-            grad_mag, grad_i, grad_j = get_grad(grad_value, self.cell_size, max_altitude=self.world.max_altitude)
+            grad_magnitude, grad_i, grad_j = get_grad(grad_value, self.cell_size, max_altitude=self.world.max_altitude)
 
-            return [(key + "_grad_mag", grad_mag), (key + "_grad_i", grad_i), (key + "_grad_j", grad_j)]
+            return [(key + "_grad_magnitude", grad_magnitude), (key + "_grad_i", grad_i), (key + "_grad_j", grad_j)]
         return []
     def _set_magnitude(self, key, value):
         if self.world.map_info[key].get('requires_magnitude', False):
-            mag_value = np.linalg.norm(value, axis=-1)
-            return [(key + "_magnitude", mag_value)]
+            magnitude = np.linalg.norm(value, axis=-1)
+            return [(key + "_magnitude", magnitude)]
         return []
