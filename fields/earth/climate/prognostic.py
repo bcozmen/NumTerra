@@ -69,7 +69,7 @@ class PrognosticClimateConfig:
                                # Higher = more accurate shadow edges; 16 is a good default.
 
     # Solar transmission parameters
-    cloud_transmission_coef: float = 0.5 # Extinction coeff for clouds in shortwave
+    cloud_transmission_coef: float = 2.0 # Extinction coeff for clouds in shortwave
     vapor_transmission_coef: float = 0.005 # Extinction coeff for water vapor in shortwave
     base_solar_transmission: float = 0.8 # Global baseline atmospheric shortwave transmission
 

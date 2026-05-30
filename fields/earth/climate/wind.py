@@ -4,18 +4,18 @@ class Mr2OU:
     def __init__(self, x0=0.0, v0=0.0,
                  dt=1.0,
                  relaxation_time=12.0,   # velocity relaxation time
-                 sigma_v=1.2):           # velocity noise scale
+                 target_sigma=1.2):           # velocity noise scale
 
         self.x = x0
         self.v = v0
         self.dt = dt
 
-        self.gamma = 1.0 / relaxation_time
-        self.sigma_v = sigma_v
+        self.gamma = 5.0 / relaxation_time
+        
 
         # position mean-reversion (can tune separately or tie to same scale)
         self.theta_x = 1.0 / relaxation_time
-
+        self.sigma_v = np. sqrt(2 * self.theta_x) * target_sigma
     def step(self, mu_t):
         dt = self.dt
 
@@ -25,24 +25,18 @@ class Mr2OU:
         # position mean reversion + inertia
         self.x += self.v * dt + self.theta_x * (mu_t - self.x) * dt
 
-        if self.x < 0.0:
-            self.x = 0.0
-            self.v = 0.0
-
-        return self.x, self.v
+        return np.abs(self.x), self.v
 
 def ou_process(x, theta,mu, sigma):
     return x + (theta * (mu - x) + sigma * np.random.randn()) 
 
-def vm_process(angle, mu, kappa, sigma):
+def vm_process(angle, mu, kappa, sigma, speed, dt):
     # shortest angular difference [-180, 180]
     diff = (mu - angle + 180) % 360 - 180
 
     # deterministic pull toward ITCZ regime
-    angle += kappa * diff
-
-    # stochastic weather variability (NOT regime change)
-    angle += sigma * np.random.randn()
+    diff = (kappa *  dt * diff) + (sigma * np.random.randn())
+    angle += diff / max(1e-3, speed)  # Scale by inverse of speed to reduce angle changes at high speeds
 
     return angle % 360
 
