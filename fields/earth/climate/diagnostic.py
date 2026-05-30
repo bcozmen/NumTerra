@@ -2,9 +2,10 @@ import numpy as np
 from dataclasses import dataclass, field
 from fields import BaseModel
 
-from .engines import AdvectionEngine, ErosionEngine, WaterAdvectionEngine
-from .wind import prevailing_wind_degrees, ou_process, vm_process, Mr2OU
+from .engines import ErosionEngine, WaterAdvectionEngine
 from .thermal import calculate_sensible_heat, calculate_surface_heating, calculate_longwave_radiation, calculate_atmosphere_latent_heat
+
+from .wind import Wind
 map_info = {
     'Ta' : {
         'unit' : '°C',
@@ -62,7 +63,7 @@ class DiagnosticClimateConfig:
     rho_air: float = 1.225 # Surface air density (kg/m3), used for wind acceleration calculations
     omega: float = 7.2921e-5 # Earth's angular velocity (rad/s)
     advection_scheme: str = 'semi_lagrangian' # Advection integration scheme
-    advection_iterations: int = 15 # Iterations for Poisson solver to enforce mass continuity in advection
+    advection_poisson_iterations: int = 15 # Iterations for Poisson solver to enforce mass continuity in advection
 
     # Water advection parameters
     water_advection_slope_exponent: float = 2.0   # Weight steeper slopes more: 1=linear, 2=quadratic, …
@@ -78,23 +79,6 @@ class DiagnosticClimateConfig:
     greenhouse_water_vapor_emissivity_multiplier: float = 0.2 # Water vapor contribution; base + this must stay <= 1.0
     greenhouse_water_vapor_absorption_coef: float = 0.04  # Absorption coef; saturates around Wa~50 kg/m²
 
-    #Wind Parameters
-    wind_friction: float = 0.012 # Friction coefficient for wind acceleration
-
-    wind_speed_scale : float = 0.31
-    wind_speed_relaxation_time : float = 24.0 * 3.5
-    wind_speed_target_sigma : float = 3.5 # Target standard deviation for wind speed fluctuations (m/s)
-    
-
-    wind_angle_target_sigma : float = 50.0 # Standard deviation for random wind direction changes (degrees)
-    wind_angle_relaxation_time  : float = 24.0 * 8
-
-
-def vm_relaxation_time_to_kappa(relaxation_time, dt):
-    return dt / relaxation_time
-def vm_sigma_target_to_sigma(sigma_target, kappa):
-    return np.sqrt(2 * kappa) * sigma_target
-
 
 class DiagnosticClimate(BaseModel):
     info = {
@@ -105,16 +89,7 @@ class DiagnosticClimate(BaseModel):
         super().__init__(world)
         self.config = DiagnosticClimateConfig() 
         
-
-        self.advection_engine = AdvectionEngine(
-            wind_friction=self.config.wind_friction,
-            latitude=self.world.latitude,
-            cell_size=self.world.area.cell_size,
-            rho_air=self.config.rho_air,
-            omega=self.config.omega,
-            scheme=self.config.advection_scheme,
-            div_iterations=self.config.advection_iterations
-        )
+        self.wind_model = Wind(self.world, self.config.advection_scheme, self.config.advection_poisson_iterations)
         self.water_advection_engine = WaterAdvectionEngine(
             cell_size=self.world.area.cell_size,
             max_altitude=self.world.max_altitude,
@@ -123,9 +98,6 @@ class DiagnosticClimate(BaseModel):
             field_capacity=self.config.water_advection_field_capacity
         )
         self.erosion_engine = ErosionEngine() # Placeholder for future erosion logic
-        self.prevailing_wind_angle, self.prevailing_wind_speed = prevailing_wind_degrees(self.world.latitude, self.world.longitude, self.world['time'].day_of_year)
-        self.mrv_ou = Mr2OU(x0=self.prevailing_wind_speed, v0=0.0, dt=self.world['time'].dt, relaxation_time=self.config.wind_speed_relaxation_time, target_sigma=self.config.wind_speed_target_sigma)
-        
         self.init() 
 
     def _compute_initial_temperature_base(self):
@@ -146,27 +118,7 @@ class DiagnosticClimate(BaseModel):
         
         return T_mean + T_season_offset + T_diurnal_offset
 
-    def _compute_initial_wind(self, shape):
-        V = np.zeros((*shape, 2), dtype=np.float32)
-        V[..., 0] = self.prevailing_wind_speed * np.sin(np.radians(self.prevailing_wind_angle)) # u component (east-west)
-        V[..., 1] = self.prevailing_wind_speed * np.cos(np.radians(self.prevailing_wind_angle)) # v component (north-south)
-        return V
 
-    def _get_random_wind_base_difference(self, lat, lon, day, dt):
-        mu_angle, mu_speed = prevailing_wind_degrees(lat, lon, day)
-
-        kappa = vm_relaxation_time_to_kappa(self.config.wind_angle_relaxation_time, dt)
-        sigma_angle = vm_sigma_target_to_sigma(self.config.wind_angle_target_sigma, kappa)
-        
-        
-        self.prevailing_wind_angle = vm_process(self.prevailing_wind_angle, mu_angle, kappa, sigma_angle, self.prevailing_wind_speed, dt)
-        self.prevailing_wind_speed, _ = self.mrv_ou.step(mu_speed)
-        angle_rad = np.radians(self.prevailing_wind_angle)
-        scale = self.config.wind_speed_scale / self.config.wind_angle_relaxation_time # Scale down the influence of random wind changes to prevent extreme spikes
-        speed = self.prevailing_wind_speed * scale
-        dV_i= speed * np.sin(angle_rad)
-        dV_j = speed * np.cos(angle_rad)
-        return dV_i, dV_j
     ## ========== Simulation & Generation ==========
     def init(self):
         """Bootstraps the initial climatic state with latitude and altitude-dependent values."""
@@ -194,7 +146,8 @@ class DiagnosticClimate(BaseModel):
         Ws = np.where(M_sea, np.float32(50.0), np.float32(50.0)).astype(np.float32)
 
         # Initialize Wind
-        V = self._compute_initial_wind(H.shape)
+        V = np.zeros((*H.shape, 2), dtype=np.float32)
+        V = self.wind_model.get_initial_wind(V)
 
         self.set_maps({'Ta': Ta, 'Ts': Ts, 'Tw': Tw, 'Wa': Wa, 'Wc': Wc, 'Ws': Ws, 'V': V})
     
@@ -208,10 +161,6 @@ class DiagnosticClimate(BaseModel):
         # dTa, dTs, dTw are in K/s. dt is in hours.
         dt_sec = dt * 3600.0
 
-        # Advection assumes dt in hours (acts quasi-statically for wind magnitude logic) to avoid Mach 200 winds.
-        dV_i, dV_j = self._get_random_wind_base_difference(self.world.latitude, self.world.longitude, self.world['time'].day_of_year, dt)
-        V[..., 0] += dV_i
-        V[..., 1] += dV_j
         Ta = self._advect(H, M_sea, sea_level, Ta, P, Wa, Wc, Ws, V, dt)
         
         # Apply integrations (Euler step)
@@ -350,7 +299,7 @@ class DiagnosticClimate(BaseModel):
         """Performs iterative sub-steps for advection to improve numeric stability."""
         sub_dt = dt / self.config.adv_sub_steps
         for _ in range(self.config.adv_sub_steps):
-            Ta, Wa, Wc, V = self.advection_engine(H, sea_level, Ta, P, V, Wa, Wc, sub_dt)
+            Ta, Wa, Wc, V = self.wind_model(H, sea_level, Ta, P, V, Wa, Wc, sub_dt)
             Ws = self.water_advection_engine(H, M_sea, Ws, sub_dt)
             H = self.erosion_engine(H, Ws, Ta, sub_dt) # Placeholder for future erosion logic
         return Ta
