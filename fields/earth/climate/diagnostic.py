@@ -55,7 +55,7 @@ class DiagnosticClimateConfig:
     albedo_water: float = 0.06 # Average albedo for water
     Lv: float = 2.5e6          # Latent heat of vaporization/condensation (J/kg)
 
-    wind_friction: float = 0.01 # Friction coefficient for wind acceleration
+    wind_friction: float = 0.012 # Friction coefficient for wind acceleration
     adv_sub_steps: int = 4 # Number of sub-steps for advection calculations to improve stability
     rho_air: float = 1.225 # Surface air density (kg/m3), used for wind acceleration calculations
     omega: float = 7.2921e-5 # Earth's angular velocity (rad/s)
@@ -70,12 +70,12 @@ class DiagnosticClimateConfig:
     greenhouse_water_vapor_absorption_coef: float = 0.02 # Absorption coefficient for water vapor
 
     #random wind parameters
-    wind_speed_scale : float = 0.01 # Scale for random wind speed fluctuations (m/s)
+    wind_speed_scale : float = 0.31
     wind_speed_relaxation_time : float = 24.0 * 4
-    wind_speed_target_sigma : float = 0.1 # Target standard deviation for wind speed fluctuations (m/s)
+    wind_speed_target_sigma : float = 0.5 # Target standard deviation for wind speed fluctuations (m/s)
     
 
-    wind_angle_target_sigma : float = 5.0 # Standard deviation for random wind direction changes (degrees)
+    wind_angle_target_sigma : float = 50.0 # Standard deviation for random wind direction changes (degrees)
     wind_angle_relaxation_time  : float = 24.0 * 8
 
 
@@ -148,7 +148,8 @@ class DiagnosticClimate(BaseModel):
         self.prevailing_wind_speed, _ = self.mrv_ou.step(mu_speed)
         self.prevailing_wind_speed = max(0.0, self.prevailing_wind_speed) # Ensure non-negative wind speed
         angle_rad = np.radians(self.prevailing_wind_angle)
-        speed = self.prevailing_wind_speed * self.config.wind_speed_scale
+        scale = self.config.wind_speed_scale / self.config.wind_angle_relaxation_time # Scale down the influence of random wind changes to prevent extreme spikes
+        speed = self.prevailing_wind_speed * scale
         dV_i= speed * np.sin(angle_rad)
         dV_j = speed * np.cos(angle_rad)
         return dV_i, dV_j
@@ -165,7 +166,7 @@ class DiagnosticClimate(BaseModel):
 
         # Initialize Temperature
         T_base = self._compute_initial_temperature_base()
-        Ta = (T_base - self.config.lapse_rate * H_m).astype(np.float32)
+        Ta = (T_base - (self.config.lapse_rate/4) * H_m).astype(np.float32)
         Ts = Ta.copy()
         Tw = np.where(M_sea, np.float32(T_base), Ta).astype(np.float32)
 
