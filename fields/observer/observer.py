@@ -125,4 +125,17 @@ class Observer(BaseModel):
             ax.legend()
 
         plt.show()
-            
+    
+    def print(self, keys = None,frequency = 100):
+        if keys is None:
+            keys = list(self.stats.keys())
+        print("Details of hourly percentiles:")
+        print(f"Frequency: Every {frequency} steps")
+        print(f"Percentiles: {self.cfg.percentiles}")
+        for k in keys:
+            s = np.array(self.stats[k]['hourly'])[::frequency]
+            print(f"Hourly percentiles for {k} with frequency {frequency}:")
+            for ix, ts in enumerate(s):
+                step = ix * frequency
+                day = step * self.world['time'].dt / 24
+                print(f"  Step {step} (day: {day:.2f}): {ts}")

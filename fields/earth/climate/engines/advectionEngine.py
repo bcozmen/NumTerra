@@ -2,13 +2,10 @@ import numpy as np
 from .numba import (fast_euler_advection, semi_lagrangian_advection, compute_wind_acceleration,
                     compute_divergence, solve_poisson_jacobi, project_velocity)
 
-class AdvectionEngineConfig:
-    scheme: str = 'semi_lagrangian' # Integration scheme: euler, fast_euler, semi_lagrangian
-    divergence_correction_iterations: int = 15 # Iterations for Poisson solver to enforce mass continuity
 
 class AdvectionEngine():
     # If checkerboard pattern emerges, apply gaussian blur
-    def __init__(self, wind_friction, latitude, cell_size=(1000, 1000), rho_air=1.225, omega=7.2921e-5, scheme='semi_lagrangian', div_iterations=15):
+    def __init__(self, wind_friction, latitude, cell_size, rho_air, omega, scheme, div_iterations):
         self.wind_friction = wind_friction
         self.latitude = latitude
         self.cell_size = cell_size  # Grid spacing in meters (tuple: (dx, dy))

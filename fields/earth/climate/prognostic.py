@@ -64,6 +64,8 @@ class PrognosticClimateConfig:
     Ce_land : float = 0.0008  # Evaporation coefficient over land
     precip_conversion_rate : float = 1.0 # Tunable parameter for actual precipitation conversion
     cloud_delay_factor : float = 0.5 # Proportion of precip that remains as clouds per tick
+    rH_condensation_threshold: float = 0.85  # Relative humidity at which clouds start forming (0-1)
+    condensation_timescale: float = 3.0       # Hours over which excess vapor relaxes to clouds; shorter = harder threshold
 
     horizon_n_dirs : int = 16  # Number of azimuth directions for the precomputed horizon shadow map.
                                # Higher = more accurate shadow edges; 16 is a good default.
@@ -71,7 +73,7 @@ class PrognosticClimateConfig:
     # Solar transmission parameters
     cloud_transmission_coef: float = 2.0 # Extinction coeff for clouds in shortwave
     vapor_transmission_coef: float = 0.005 # Extinction coeff for water vapor in shortwave
-    base_solar_transmission: float = 0.8 # Global baseline atmospheric shortwave transmission
+    base_solar_transmission: float = 0.70 # Global baseline atmospheric shortwave transmission
 
 class PrognosticClimate(BaseModel):
     info = {
@@ -251,9 +253,18 @@ class PrognosticClimate(BaseModel):
     def _calculate_precipitation(self, Wa, Wc, Wa_max, precip_conversion_rate, cloud_delay_factor):
         """Calculates precipitation rate and condensation rates."""
         dt = self.world['time'].dt
-        # Calculate condensation first: vapor exceeding max capacity turns into liquid clouds.
-        # Condense the entire excess over the current time step (dt).
-        condensation = np.maximum(0.0, Wa - Wa_max) / dt
+        # Soft exponential-relaxation condensation:
+        #   In reality clouds form gradually above ~70-90% RH (depending on aerosols), not at a
+        #   hard 100% threshold.  We relax the excess vapor toward the threshold over a
+        #   characteristic timescale tau, so the fraction condensed per step is
+        #       alpha = 1 - exp(-dt / tau)
+        #   This is numerically stable (cannot overshoot) and physically motivated.
+        #   tau -> 0  =>  alpha -> 1  =>  hard threshold (all excess removed in one step)
+        #   tau = dt  =>  alpha ~ 0.63
+        threshold = self.config.rH_condensation_threshold
+        tau       = self.config.condensation_timescale
+        alpha     = 1.0 - np.exp(-dt / tau)
+        condensation = alpha * np.maximum(0.0, Wa - threshold * Wa_max) / dt
         
         # Precipitation falls from already formed clouds
         # Delay factor moderates how much liquid rapidly drops vs stays afloat

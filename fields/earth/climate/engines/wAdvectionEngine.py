@@ -1,9 +1,6 @@
+import numpy as np
 from .numba import d8_water_routing
 
-
-class WaterAdvectionEngineConfig:
-    slope_exponent: float = 2.0   # Weight steeper slopes more: 1=linear, 2=quadratic, …
-    flow_rate: float = 0.5        # Fraction of cell's water drained per hour at maximum weight
 
 
 class WaterAdvectionEngine():
@@ -13,14 +10,19 @@ class WaterAdvectionEngine():
     Water in each land cell drains proportionally to all downhill 8-connected
     neighbours, weighted by slope^slope_exponent.  Uses a pull formulation so
     the kernel is fully parallel (no race conditions).
+
+    Only water above `field_capacity` is routed.  Below that threshold, water
+    is held by capillary forces (soil moisture) and does not flow.  Sea cells
+    are pure sinks — they never contribute outflow, only absorb inflow.
     """
 
-    def __init__(self, cell_size=(1000.0, 1000.0), max_altitude=1000.0,
-                 slope_exponent=2.0, flow_rate=0.5):
+    def __init__(self, cell_size, max_altitude,
+                 slope_exponent, flow_rate, field_capacity):
         self.dx, self.dy = float(cell_size[0]), float(cell_size[1])
         self.max_altitude = float(max_altitude)
         self.slope_exponent = float(slope_exponent)
         self.flow_rate = float(flow_rate)
+        self.field_capacity = float(field_capacity)
 
     def __call__(self, H, M_sea, Ws, dt):
         """
@@ -35,8 +37,15 @@ class WaterAdvectionEngine():
         -------
         Ws_new : float32 (rows, cols)
         """
-        return d8_water_routing(
-            H, M_sea, Ws,
+        # Only route water above the field capacity.  Below this level, capillary
+        # forces hold moisture in the soil — it doesn't flow downhill.
+        # Sea cells (M_sea=1) contribute zero runoff; they are sinks, not sources.
+        Ws_runoff  = np.maximum(Ws - self.field_capacity, 0.0) * (1.0 - M_sea)
+        Ws_retained = Ws - Ws_runoff
+
+        Ws_runoff_routed = d8_water_routing(
+            H, M_sea, Ws_runoff,
             self.max_altitude, self.dx, self.dy,
             dt, self.slope_exponent, self.flow_rate,
         )
+        return Ws_retained + Ws_runoff_routed

@@ -50,27 +50,37 @@ class DiagnosticClimateConfig:
     c_land: float = 2.0e6    # Land surface / ~1 m soil column capacity
     c_water: float = 4.184e7 # ~10m deep active mixing layer (1000kg/m3 * 10m * 4184 J/kg/K)
     
+    # Radiation parameters
     sensible_heat_coef: float = 4.0 # Coefficient for sensible heat exchange
     stefan_boltzmann_constant: float = 5.670374419e-8 # (W/m2/K4)
     albedo_land: float = 0.25  # Average albedo for land
     albedo_water: float = 0.06 # Average albedo for water
     Lv: float = 2.5e6          # Latent heat of vaporization/condensation (J/kg)
 
-    wind_friction: float = 0.012 # Friction coefficient for wind acceleration
+    # Advection parameters
     adv_sub_steps: int = 4 # Number of sub-steps for advection calculations to improve stability
     rho_air: float = 1.225 # Surface air density (kg/m3), used for wind acceleration calculations
     omega: float = 7.2921e-5 # Earth's angular velocity (rad/s)
     advection_scheme: str = 'semi_lagrangian' # Advection integration scheme
+    advection_iterations: int = 15 # Iterations for Poisson solver to enforce mass continuity in advection
 
+    # Water advection parameters
+    water_advection_slope_exponent: float = 2.0   # Weight steeper slopes more: 1=linear, 2=quadratic, …
+    water_advection_flow_rate: float = 0.5        # Fraction of cell's water drained per hour at maximum weight
+    water_advection_field_capacity: float = 20.0  # Soil moisture held by capillary forces [mm]; only excess above this routes
+
+    # Thermodynamics parameters
     lapse_rate: float = 0.0065 # Temperature drop per meter altitude (K/m)
     max_temperature_step: float = 40.0 # Maximum allowed temperature change per step (K)
-    
+        
     # Longwave radiation parameters
-    greenhouse_base_emissivity: float = 0.6  # Baseline emissivity from well-mixed GHGs (CO2, etc)
-    greenhouse_water_vapor_emissivity_multiplier: float = 0.35 # Water vapor contribution; base + this must stay <= 1.0
+    greenhouse_base_emissivity: float = 0.55  # Baseline emissivity from well-mixed GHGs (CO2, etc)
+    greenhouse_water_vapor_emissivity_multiplier: float = 0.2 # Water vapor contribution; base + this must stay <= 1.0
     greenhouse_water_vapor_absorption_coef: float = 0.04  # Absorption coef; saturates around Wa~50 kg/m²
 
-    #random wind parameters
+    #Wind Parameters
+    wind_friction: float = 0.012 # Friction coefficient for wind acceleration
+
     wind_speed_scale : float = 0.31
     wind_speed_relaxation_time : float = 24.0 * 3.5
     wind_speed_target_sigma : float = 3.5 # Target standard deviation for wind speed fluctuations (m/s)
@@ -102,11 +112,15 @@ class DiagnosticClimate(BaseModel):
             cell_size=self.world.area.cell_size,
             rho_air=self.config.rho_air,
             omega=self.config.omega,
-            scheme=self.config.advection_scheme
+            scheme=self.config.advection_scheme,
+            div_iterations=self.config.advection_iterations
         )
         self.water_advection_engine = WaterAdvectionEngine(
             cell_size=self.world.area.cell_size,
             max_altitude=self.world.max_altitude,
+            slope_exponent=self.config.water_advection_slope_exponent,
+            flow_rate=self.config.water_advection_flow_rate,
+            field_capacity=self.config.water_advection_field_capacity
         )
         self.erosion_engine = ErosionEngine() # Placeholder for future erosion logic
         self.prevailing_wind_angle, self.prevailing_wind_speed = prevailing_wind_degrees(self.world.latitude, self.world.longitude, self.world['time'].day_of_year)
@@ -210,16 +224,27 @@ class DiagnosticClimate(BaseModel):
         # Apply mass balance for water phases
         Wa += (Evap - Condensation) * dt
         Wc += (Condensation - Precip) * dt
-        Ws += (Precip - Evap) * dt
+        Ws = np.maximum(Ws + (Precip - Evap) * dt, 0.0)  # clamp: can't go below 0
 
-        # Convert saturation excess in atmospheric water to condensation (cloud formation)
-        rH = Wa / Wa_max
-        excess = np.maximum(rH - 1.0, 0.0)
+        # Flush float32 subnormal values from Wc (can reach 1e-43 due to exponential
+        # precipitation decay from tiny initial values).  Subnormal fp ops are ~100× slower.
+        Wc = np.maximum(Wc, 0.0)   # guard against floating-point negatives
+        Wc[Wc < 1e-10] = 0.0       # flush subnormals
 
-        excess_water = excess * Wa  # kg/m² — compute before modifying Wa
-        Condensation += excess_water / dt  # convert mass (mm) to rate (mm/hr) to keep Condensation in mm/hr
-        Wa -= excess_water
-        Wc += excess_water
+        # Instantly condense any atmospheric water that exceeds saturation capacity.
+        # This is a last-resort hard cap; with the soft RH threshold in prognostic it should
+        # rarely trigger, but can catch numerical overshoots from large advection steps.
+        excess_water = np.maximum(Wa - Wa_max, 0.0)  # kg/m² of actual overshoot
+        if np.any(excess_water > 0):
+            excess_condensation_rate = excess_water / dt  # kg/m²/hr = mm/hr
+            # Apply the latent heat from this instant condensation to the air
+            dTa_excess = calculate_atmosphere_latent_heat(excess_condensation_rate, self.config.Lv, self.config.c_air)
+            Ta += np.clip(dTa_excess * dt_sec, -self.config.max_temperature_step, self.config.max_temperature_step)
+            Wa -= excess_water
+            Wc += excess_water
+            # Add to Condensation so the plotter sees the full condensation budget this step.
+            # Prognostic will recompute it next step from the updated (corrected) Wa anyway.
+            Condensation += excess_condensation_rate
         
         # Enforce constant saturation on pure sea cells
         Ws[M_sea == 1.0] = 50.0 # Or whatever baseline you use for ocean depth in mm
