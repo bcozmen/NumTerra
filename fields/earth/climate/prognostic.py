@@ -8,7 +8,7 @@ from .engines.numba import precompute_horizon_angles, lookup_shadow_from_horizon
 
 map_info = {
     'Sun' : {
-        'unit' : 'W/m2',
+        'unit' : 'W/m²',
         'description' : 'Solar energy input to the surface',
         'render' : {'cmap': 'hot'},
     },
@@ -20,27 +20,27 @@ map_info = {
     'P' : {
         'unit' : 'Pa',
         'description' : 'Atmospheric pressure',
-        'render' : {'cmap': 'RdBu_r'},
+        'render' : {'cmap': 'RdBu_r', 'scale': 'linear'},
     },
     'Wa_max' : {
-        'unit' : 'kg/m2',
+        'unit' : 'kg/m²',
         'description' : 'Maximum atmospheric water capacity',
-        'render' : {'cmap': 'YlGnBu'},
+        'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
     },
     'Evap' : {
         'unit' : 'mm/hr',
         'description' : 'Evaporation rate',
-        'render' : {'cmap': 'PuBu'},
+        'render' : {'cmap': 'PuBu', 'scale': 'linear'},
     },
     'Condensation' : {
         'unit' : 'mm/hr',
         'description' : 'Condensation rate (vapor to cloud)',
-        'render' : {'cmap': 'PuBuGn'},
+        'render' : {'cmap': 'PuBuGn', 'scale': 'linear'},
     },
     'Precip' : {
         'unit' : 'mm/hr',
         'description' : 'Precipitation rate (cloud to surface)',
-        'render' : {'cmap': 'Blues'},
+        'render' : {'cmap': 'Blues', 'scale': 'linear'},
     },
 }
 
@@ -49,7 +49,7 @@ map_info = {
 
 @dataclass
 class PrognosticClimateConfig:
-    solar_constant: float = 1361.0  # Solar constant (W/m2)
+    solar_constant: float = 1361.0 # Solar constant (W/m²) at Earth's distance from the Sun
     moisture_capacity_constant: float = 0.622 # Ratio of molecular weights of water to dry air
     moisture_scale_height: float = 2500.0 # Scale height for moisture distribution (m) - Left for legacy/other uses
 
@@ -62,11 +62,16 @@ class PrognosticClimateConfig:
 
     Ce_water : float = 0.0015 # Evaporation coefficient over water (tunable parameter for evaporation rate)
     Ce_land : float = 0.0008  # Evaporation coefficient over land
-    precip_conversion_rate : float = 0.8 # Tunable parameter for actual precipitation conversion
+    precip_conversion_rate : float = 1.0 # Tunable parameter for actual precipitation conversion
     cloud_delay_factor : float = 0.5 # Proportion of precip that remains as clouds per tick
 
     horizon_n_dirs : int = 16  # Number of azimuth directions for the precomputed horizon shadow map.
                                # Higher = more accurate shadow edges; 16 is a good default.
+
+    # Solar transmission parameters
+    cloud_transmission_coef: float = 0.5 # Extinction coeff for clouds in shortwave
+    vapor_transmission_coef: float = 0.005 # Extinction coeff for water vapor in shortwave
+    base_solar_transmission: float = 0.8 # Global baseline atmospheric shortwave transmission
 
 class PrognosticClimate(BaseModel):
     info = {
@@ -111,7 +116,10 @@ class PrognosticClimate(BaseModel):
         H, H_grad_i, H_grad_j, Ta, Wa, Wc, M_sea, Ws, Vspeed = self.get_maps()
 
         maps = {}
-        maps['Sun'], maps['Shadow'] = self._calculate_sun(H, H_grad_i, H_grad_j, Wa, Wc, self.config.solar_constant, self.world['time'].solar_vectors)
+        maps['Sun'], maps['Shadow'] = self._calculate_sun(
+            H, H_grad_i, H_grad_j, M_sea, Wa, Wc, self.config.solar_constant, self.world['time'].solar_vectors,
+            self.config.cloud_transmission_coef, self.config.vapor_transmission_coef, self.config.base_solar_transmission
+        )
         maps['P'] = self._calculate_pressure(H, Ta, Wa, self.config.P0, self.config.R, self.config.g)
         
         # Updated call matching the new layered calculation signature
@@ -121,7 +129,8 @@ class PrognosticClimate(BaseModel):
         maps['Condensation'], maps['Precip'] = self._calculate_precipitation(Wa, Wc, maps['Wa_max'], self.config.precip_conversion_rate, self.config.cloud_delay_factor)
         self.set_maps(maps)
 
-    def _calculate_sun(self, H, H_grad_i, H_grad_j, Wa, Wc, solar_constant, solar_vectors):
+    def _calculate_sun(self, H, H_grad_i, H_grad_j, M_sea, Wa, Wc, solar_constant, solar_vectors,
+                       cloud_transmission_coef, vapor_transmission_coef, base_solar_transmission):
         """Calculates solar flux across the map, accounting for terrain slope incident angles."""
         sx, sy, sz = solar_vectors
         dx, dy = self.world.area.cell_size
@@ -142,17 +151,26 @@ class PrognosticClimate(BaseModel):
                 shadow_map[:] = 0.0
         # --------------------------------------------------------------------------
 
+        if sz <= 0.0:
+            return np.zeros_like(H), np.zeros_like(H)
+            
         sz = np.clip(sz, 0.0, 1.0)
 
         # Clouds heavily block solar transmission. Water vapor has a moderate effect.
-        cloud_transmission = np.exp(-0.5 * Wc) # Liquid water blocks heavily
-        vapor_transmission = np.exp(-0.05 * Wa)
-        transmission = 0.8 * vapor_transmission * cloud_transmission
+        cloud_transmission = np.exp(-cloud_transmission_coef * Wc) # Liquid water blocks heavily
+        # Water vapor is mostly transparent to visible light (shortwave), so we lower the coefficient
+        vapor_transmission = np.exp(-vapor_transmission_coef * Wa)
+        transmission = base_solar_transmission * vapor_transmission * cloud_transmission
 
         # With imshow(origin='lower'): row-axis = North, col-axis = East.
         # The outward surface normal in (East, North, Up) order is (-∂H/∂col, -∂H/∂row, 1)
         # = (-H_grad_j, -H_grad_i, 1).  Pairing with solar vector (sx=East, sy=North, sz=Up).
-        nx, ny, nz = -H_grad_j, -H_grad_i, 1.0
+        # Water/ocean surfaces are flat — suppress horizontal normal components on sea cells
+        # so their incidence is determined only by the solar elevation angle, not terrain tilt.
+        land_mask = 1.0 - M_sea
+        nx = -H_grad_j * land_mask
+        ny = -H_grad_i * land_mask
+        nz = np.ones_like(H)
         norm = np.sqrt(nx**2 + ny**2 + nz**2) + 1e-6
         nx, ny, nz = nx / norm, ny / norm, nz / norm
 
@@ -218,23 +236,30 @@ class PrognosticClimate(BaseModel):
     def _calculate_evaporation(self, M_sea, Wa_max, Wa, Vspeed, Ws, Ce_water, Ce_land):
         """Calculates global evaporation rates, considering surface water availability and wind speed."""
         Vspeed = Vspeed + 0.1  # Avoid zero wind speed
+        dt = self.world['time'].dt
         
         # Calculate distinct evaporation potentials for land and water using their unique coefficients
         evap_potential_water = Ce_water * Vspeed * np.maximum(0.0, Wa_max - Wa)
         evap_potential_land = Ce_land * Vspeed * np.maximum(0.0, Wa_max - Wa)
 
         sea_evaporation = evap_potential_water
-        land_evaporation = np.minimum(evap_potential_land, Ws) # Land limited by actual soil moisture
+        # Land evaporation is limited by the actual soil moisture available per hour
+        land_evaporation = np.minimum(evap_potential_land, Ws / dt)
 
         return M_sea * sea_evaporation + (1 - M_sea) * land_evaporation
 
     def _calculate_precipitation(self, Wa, Wc, Wa_max, precip_conversion_rate, cloud_delay_factor):
         """Calculates precipitation rate and condensation rates."""
-        # Calculate condensation first: vapor exceeding max capacity turns into liquid clouds
-        condensation = np.maximum(0.0, Wa - Wa_max)
+        dt = self.world['time'].dt
+        # Calculate condensation first: vapor exceeding max capacity turns into liquid clouds.
+        # Condense the entire excess over the current time step (dt).
+        condensation = np.maximum(0.0, Wa - Wa_max) / dt
         
         # Precipitation falls from already formed clouds
         # Delay factor moderates how much liquid rapidly drops vs stays afloat
-        precip = Wc * precip_conversion_rate * (1.0 - cloud_delay_factor)
+        # We use exponential decay to prevent overshooting (Wc going negative) for large dt.
+        removal_rate = precip_conversion_rate * (1.0 - cloud_delay_factor)
+        removed_fraction = 1.0 - np.exp(-removal_rate * dt)
+        precip = (Wc * removed_fraction) / dt
         
         return condensation, precip

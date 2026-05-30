@@ -5,8 +5,12 @@ from .area import Area
 from fields.earth import __default_models__ as earth_models
 from fields.time import Time, TimeRegister
 from fields.plotter import WorldRenderer
+from fields.observer import Observer
 
-
+#Azimuth: North = 0° (360°), East = 90°, South = 180°.
+#Latitude sign: positive = north, negative = south.
+#Longitude sign: positive = east (°E).
+#Grid axes: x → East, y → North.
 
 @dataclass
 class WorldConfig:
@@ -24,7 +28,7 @@ class WorldConfig:
     debug : bool = False
 
 
-    init_models : list = field(default_factory=lambda: [Time] + earth_models + [WorldRenderer])#, Wind, Humidity, Erosion])
+    init_models : list = field(default_factory=lambda: [Time] + earth_models + [WorldRenderer, Observer])#, Wind, Humidity, Erosion])
 
     def __post_init__(self):
         self.size = (2 ** self.size_exponent + 1, 2 ** self.size_exponent + 1)
@@ -53,18 +57,21 @@ class World():
             m = model(self) # initialize the model 
             self.models[m.info['name']] = m
             
-    def step(self, hours = 1):
+    def step(self, hours = 1, plot = False):
         for _ in range(hours):
             for model in self.models.values():
+                if model.info['name'] == 'renderer' and not plot:
+                    continue
                 model()
 
     def report_times(self):
         self.time_register.report()
 
-    def __call__(self, hours = 1):
+    def __call__(self, hours = 1, plot = False):
         self.step(hours)
     def __getitem__(self, key):
         if key in self.models:
             return self.models[key]
         
+    
 

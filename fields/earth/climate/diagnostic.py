@@ -3,36 +3,37 @@ from dataclasses import dataclass, field
 from fields import BaseModel
 
 from .engines import AdvectionEngine, ErosionEngine, WaterAdvectionEngine
+from . wind import prevailing_wind_degrees, ou_process, vm_process, Mr2OU
 map_info = {
     'Ta' : {
-        'unit' : 'C',
+        'unit' : '°C',
         'description' : 'Air temperature',
-        'render' : {'cmap': 'RdYlBu_r'},
+        'render' : {'cmap': 'RdYlBu_r', 'vrange': (-15, 40)},
     },
     'Ts' : {
-        'unit' : 'C',
+        'unit' : '°C',
         'description' : 'Surface (land) temperature',
-        'render' : {'cmap': 'RdYlBu_r'},
+        'render' : {'cmap': 'RdYlBu_r', 'vrange': (-15, 40)},
     },
     'Tw' : {
-        'unit' : 'C',
+        'unit' : '°C',
         'description' : 'Water (ocean/lake) temperature',
-        'render' : {'cmap': 'Blues_r'},
+        'render' : {'cmap': 'Blues_r', 'vrange': (0, 30)},
     },
     'Wa' : {
-        'unit' : 'kg/m2',
+        'unit' : 'kg/m²',
         'description' : 'Atmospheric water content',
-        'render' : {'cmap': 'YlGnBu'},
+        'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
     },
     'Wc' : {
-        'unit' : 'kg/m2',
+        'unit' : 'kg/m²',
         'description' : 'Cloud liquid water content',
-        'render' : {'cmap': 'Blues'},
+        'render' : {'cmap': 'Blues', 'scale': 'linear'},
     },
     'Ws' : {
         'unit' : 'mm',
         'description' : 'Surface water (e.g. soil moisture, water bodies)',
-        'render' : {'cmap': 'YlGn'},
+        'render' : {'cmap': 'YlGn', 'scale': 'linear'},
     },
     'V' : {
         'requires_magnitude' : True,
@@ -41,41 +42,54 @@ map_info = {
     }
 }
 
-
-
-
 @dataclass
 class DiagnosticClimateConfig:
     # Effective heat capacities for the whole vertical column (J/m2/K)
     c_air: float = 1.004e7   # 1004 J/kg/K * ~10000 kg/m2 of air column
-    c_land: float = 2.0e5    # Land surface skin/vegetation capacity
+    c_land: float = 2.0e6    # Land surface / ~1 m soil column capacity
     c_water: float = 4.184e7 # ~10m deep active mixing layer (1000kg/m3 * 10m * 4184 J/kg/K)
     
-    sensible_heat_coef: float = 1.2 # Coefficient for sensible heat exchange
+    sensible_heat_coef: float = 4.0 # Coefficient for sensible heat exchange
     stefan_boltzmann_constant: float = 5.670374419e-8 # (W/m2/K4)
     albedo_land: float = 0.25  # Average albedo for land
     albedo_water: float = 0.06 # Average albedo for water
     Lv: float = 2.5e6          # Latent heat of vaporization/condensation (J/kg)
 
-    wind_friction: float = 0.0015 # Friction coefficient for wind acceleration
-    adv_sub_steps: int = 3 # Number of sub-steps for advection calculations to improve stability
+    wind_friction: float = 0.01 # Friction coefficient for wind acceleration
+    adv_sub_steps: int = 4 # Number of sub-steps for advection calculations to improve stability
     rho_air: float = 1.225 # Surface air density (kg/m3), used for wind acceleration calculations
     omega: float = 7.2921e-5 # Earth's angular velocity (rad/s)
     advection_scheme: str = 'semi_lagrangian' # Advection integration scheme
+
+    lapse_rate: float = 0.0065 # Temperature drop per meter altitude (K/m)
+    max_temperature_step: float = 40.0 # Maximum allowed temperature change per step (K)
+    
+    # Longwave radiation parameters
+    greenhouse_base_emissivity: float = 0.0 # Baseline emissivity from well-mixed GHGs (CO2, etc)
+    greenhouse_water_vapor_emissivity_multiplier: float = 1.0 # Extra emissivity scale from water vapor
+    greenhouse_water_vapor_absorption_coef: float = 0.02 # Absorption coefficient for water vapor
+
+    #random wind parameters
+    wind_speed_scale : float = 0.01 # Scale for random wind speed fluctuations (m/s)
+    wind_speed_relaxation_time : float = 24.0 * 4
+    wind_speed_target_sigma : float = 0.1 # Target standard deviation for wind speed fluctuations (m/s)
+    
+
+    wind_angle_target_sigma : float = 5.0 # Standard deviation for random wind direction changes (degrees)
+    wind_angle_relaxation_time  : float = 24.0 * 8
+
+
+def vm_relaxation_time_to_kappa(relaxation_time, dt):
+    return dt / relaxation_time
+def vm_sigma_target_to_sigma(sigma_target, kappa):
+    return np.sqrt(2 * kappa) * sigma_target
+
 
 class DiagnosticClimate(BaseModel):
     info = {
         'name':'diagnostic_climate',
         'map_info' : map_info
     }
-
-    """
-    Improvements: Crucial Missing Link: The atmosphere currently does not absorb the outgoing longwave radiation (σT4)
-     emitted by the earth, nor does it emit its own longwave radiation back to the surface.
-      Adding a "Greenhouse Effect" term (where Wa​ traps longwave radiation) will prevent your simulation
-       from freezing over too rapidly at night.
-    """
-    
     def __init__(self, world):
         super().__init__(world)
         self.config = DiagnosticClimateConfig() 
@@ -89,8 +103,14 @@ class DiagnosticClimate(BaseModel):
             omega=self.config.omega,
             scheme=self.config.advection_scheme
         )
-        self.water_advection_engine = WaterAdvectionEngine() # Placeholder for future water-specific advection logic
+        self.water_advection_engine = WaterAdvectionEngine(
+            cell_size=self.world.area.cell_size,
+            max_altitude=self.world.max_altitude,
+        )
         self.erosion_engine = ErosionEngine() # Placeholder for future erosion logic
+        self.prevailing_wind_angle, self.prevailing_wind_speed = prevailing_wind_degrees(self.world.latitude, self.world.longitude, self.world['time'].day_of_year)
+        self.mrv_ou = Mr2OU(x0=self.prevailing_wind_speed, v0=0.0, dt=self.world['time'].dt, relaxation_time=self.config.wind_speed_relaxation_time, sigma_v=self.config.wind_speed_target_sigma)
+        
         self.init() 
 
     def _compute_initial_temperature_base(self):
@@ -112,24 +132,26 @@ class DiagnosticClimate(BaseModel):
         return T_mean + T_season_offset + T_diurnal_offset
 
     def _compute_initial_wind(self, shape):
-        """Returns initial wind patterns approximating global circulation cells."""
-        lat = self.world.latitude
-        
-        # Basic zonal flow: Trade winds (easterlies) near equator, Westerlies mid-lat, Polar easterlies
-        # Sine wave proxy: sin(3 * latitude) gives roughly 3 cells
-        zonal_wind = -5.0 * np.sin(3.0 * np.radians(lat))
-        
-        # Meridional flow (north/south) is weaker
-        meridional_wind = 2.0 * np.cos(3.0 * np.radians(lat))
-        
         V = np.zeros((*shape, 2), dtype=np.float32)
-        V[..., 0] = zonal_wind
-        V[..., 1] = meridional_wind
-
-        # Add small perturbations 
-        V += np.random.randn(*shape, 2).astype(np.float32) * 0.1
+        V[..., 0] = self.prevailing_wind_speed * np.sin(np.radians(self.prevailing_wind_angle)) # u component (east-west)
+        V[..., 1] = self.prevailing_wind_speed * np.cos(np.radians(self.prevailing_wind_angle)) # v component (north-south)
         return V
 
+    def _get_random_wind_base_difference(self, lat, lon, day, dt):
+        mu_angle, mu_speed = prevailing_wind_degrees(lat, lon, day)
+
+        kappa = vm_relaxation_time_to_kappa(self.config.wind_angle_relaxation_time, dt)
+        sigma_angle = vm_sigma_target_to_sigma(self.config.wind_angle_target_sigma, kappa)
+        
+        
+        self.prevailing_wind_angle = vm_process(self.prevailing_wind_angle, mu_angle, kappa, sigma_angle)
+        self.prevailing_wind_speed, _ = self.mrv_ou.step(mu_speed)
+        self.prevailing_wind_speed = max(0.0, self.prevailing_wind_speed) # Ensure non-negative wind speed
+        angle_rad = np.radians(self.prevailing_wind_angle)
+        speed = self.prevailing_wind_speed * self.config.wind_speed_scale
+        dV_i= speed * np.sin(angle_rad)
+        dV_j = speed * np.cos(angle_rad)
+        return dV_i, dV_j
     ## ========== Simulation & Generation ==========
     def init(self):
         """Bootstraps the initial climatic state with latitude and altitude-dependent values."""
@@ -143,8 +165,7 @@ class DiagnosticClimate(BaseModel):
 
         # Initialize Temperature
         T_base = self._compute_initial_temperature_base()
-        lapse_rate = 0.0065  # K/m (ICAO standard atmosphere)
-        Ta = (T_base - lapse_rate * H_m).astype(np.float32)
+        Ta = (T_base - self.config.lapse_rate * H_m).astype(np.float32)
         Ts = Ta.copy()
         Tw = np.where(M_sea, np.float32(T_base), Ta).astype(np.float32)
 
@@ -155,7 +176,7 @@ class DiagnosticClimate(BaseModel):
         Wc = np.zeros_like(Wa)
 
         # Surface water: saturated ocean, modest soil moisture on land (mm)
-        Ws = np.where(M_sea, np.float32(1000.0), np.float32(50.0)).astype(np.float32)
+        Ws = np.where(M_sea, np.float32(50.0), np.float32(50.0)).astype(np.float32)
 
         # Initialize Wind
         V = self._compute_initial_wind(H.shape)
@@ -164,24 +185,42 @@ class DiagnosticClimate(BaseModel):
     
     def step(self):
         """Advances the climate diagnostic state by a single time step (dt)."""
-        H, M_sea, Sun, Ta, Ts, Tw, P, Wa, Wc, Ws, V, Vspeed, Evap, Condensation, Precip = self.get_maps()
+        H, sea_level, M_sea, Sun, Ta, Ts, Tw, P, Wa, Wa_max, Wc, Ws, V, Vspeed, Evap, Condensation, Precip = self.get_maps()
         dt = self.world['time'].dt
 
         dTa, dTs, dTw = self._calculate_delta_T(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc)
+        
+        # dTa, dTs, dTw are in K/s. dt is in hours.
+        dt_sec = dt * 3600.0
 
-        Ta = self._advect(H, Ta, P, Wa, Wc, Ws, V, dt)
+        # Advection assumes dt in hours (acts quasi-statically for wind magnitude logic) to avoid Mach 200 winds.
+        dV_i, dV_j = self._get_random_wind_base_difference(self.world.latitude, self.world.longitude, self.world['time'].day_of_year, dt)
+        V[..., 0] += dV_i
+        V[..., 1] += dV_j
+        Ta = self._advect(H, M_sea, sea_level, Ta, P, Wa, Wc, Ws, V, dt)
+        
         # Apply integrations (Euler step)
-        Ta += dTa * dt
-        Ts += dTs * dt
-        Tw += dTw * dt
+        # We clip the maximal temperature step to +/- max_temperature_step per timestep to prevent numeric explosions
+        # from aggressive explicit integration of Sensible Heat if Vspeed randomly spikes.
+        Ta += np.clip(dTa * dt_sec, -self.config.max_temperature_step, self.config.max_temperature_step)
+        Ts += np.clip(dTs * dt_sec, -self.config.max_temperature_step, self.config.max_temperature_step)
+        Tw += np.clip(dTw * dt_sec, -self.config.max_temperature_step, self.config.max_temperature_step)
 
         # Apply mass balance for water phases
         Wa += (Evap - Condensation) * dt
         Wc += (Condensation - Precip) * dt
         Ws += (Precip - Evap) * dt
+
+        # Convert saturation excess in atmospheric water to condensation (cloud formation)
+        rH = Wa / Wa_max
+        excess = np.maximum(rH - 1.0, 0.0)
+
+        Condensation +=  excess * Wa
+        Wa -= excess * Wa
+        Wc += excess * Wa
         
         # Enforce constant saturation on pure sea cells
-        Ws[M_sea == 1.0] = 1000.0 # Or whatever baseline you use for ocean depth in mm
+        Ws[M_sea == 1.0] = 50.0 # Or whatever baseline you use for ocean depth in mm
 
         self.set_maps({
             'Ta' : Ta,
@@ -190,6 +229,7 @@ class DiagnosticClimate(BaseModel):
             'Wa' : Wa,
             'Wc' : Wc,
             'Ws' : Ws,
+            'Condensation' : Condensation,
             'V' : V,
             'H' : H
         })
@@ -209,10 +249,12 @@ class DiagnosticClimate(BaseModel):
         V = self.world.area['V']().copy() # Added to keep vector state safe
         Vspeed = self.world.area['V_magnitude']()
         Evap = self.world.area['Evap']()
-        Condensation = self.world.area['Condensation']()
+        Condensation = self.world.area['Condensation']().copy()
         Precip = self.world.area['Precip']()
+        sea_level = self.world.area['sea_level']() # Added to fetch sea level for orographic effect
+        Wa_max = self.world.area['Wa_max']() # Added to fetch max water capacity for humidity calculations
         
-        return H, M_sea, Sun, Ta, Ts, Tw, P, Wa, Wc, Ws, V, Vspeed, Evap, Condensation, Precip
+        return H, sea_level, M_sea, Sun, Ta, Ts, Tw, P, Wa, Wa_max, Wc, Ws, V, Vspeed, Evap, Condensation, Precip
 
     ## ========== Core Calculations ==========
     def _calculate_delta_T(self, M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc):
@@ -225,8 +267,8 @@ class DiagnosticClimate(BaseModel):
         dT_air_latent        = self._calculate_atmosphere_latent_heat(Condensation, self.config.Lv, self.config.c_air)
         
         # Calculate Longwave / Greenhouse Radiation
-        dT_air_lw, dT_land_lw = self._calculate_longwave_radiation(Ts, Ta, Wa, self.config.stefan_boltzmann_constant, self.config.c_air, self.config.c_land)
-        _, dT_water_lw = self._calculate_longwave_radiation(Tw, Ta, Wa, self.config.stefan_boltzmann_constant, self.config.c_air, self.config.c_water)
+        dT_air_lw, dT_land_lw = self._calculate_longwave_radiation(Ts, Ta, Wa, self.config.stefan_boltzmann_constant, self.config.c_air, self.config.c_land, self.config.greenhouse_base_emissivity, self.config.greenhouse_water_vapor_emissivity_multiplier, self.config.greenhouse_water_vapor_absorption_coef)
+        _, dT_water_lw = self._calculate_longwave_radiation(Tw, Ta, Wa, self.config.stefan_boltzmann_constant, self.config.c_air, self.config.c_water, self.config.greenhouse_base_emissivity, self.config.greenhouse_water_vapor_emissivity_multiplier, self.config.greenhouse_water_vapor_absorption_coef)
 
         dT_land_solar_evap   = self._calculate_surface_heating(Sun, Evap, self.config.albedo_land, self.config.Lv, self.config.c_land)
         dT_water_solar_evap  = self._calculate_surface_heating(Sun, Evap, self.config.albedo_water, self.config.Lv, self.config.c_water)
@@ -237,12 +279,12 @@ class DiagnosticClimate(BaseModel):
         dTw = (dT_water_solar_evap + dT_water_lw - dT_water_loss) * M_sea
         return dTa, dTs, dTw
 
-    def _advect(self, H, Ta, P, Wa, Wc, Ws, V, dt):
+    def _advect(self, H, M_sea, sea_level, Ta, P, Wa, Wc, Ws, V, dt):
         """Performs iterative sub-steps for advection to improve numeric stability."""
         sub_dt = dt / self.config.adv_sub_steps
         for _ in range(self.config.adv_sub_steps):
-            Ta, Wa, Wc, V = self.advection_engine(H, Ta, P, V, Wa, Wc, sub_dt)
-            Ws = self.water_advection_engine(H, Ws, sub_dt) # Placeholder for future water-specific advection logic
+            Ta, Wa, Wc, V = self.advection_engine(H, sea_level, Ta, P, V, Wa, Wc, sub_dt)
+            Ws = self.water_advection_engine(H, M_sea, Ws, sub_dt)
             H = self.erosion_engine(H, Ws, Ta, sub_dt) # Placeholder for future erosion logic
         return Ta
 
@@ -255,19 +297,22 @@ class DiagnosticClimate(BaseModel):
 
     # Net surface temperature change from solar gain and evaporative cooling.
     def _calculate_surface_heating(self, Sun, Evap, albedo, Lv, c_surface):
-        net = (Sun * (1 - albedo)) - (Evap * Lv)
+        # Evap is in mm/hr, convert to kg/m2/s by dividing by 3600
+        evap_flux = (Evap / 3600.0) * Lv
+        net = (Sun * (1 - albedo)) - evap_flux
         return net / c_surface
         
-    def _calculate_longwave_radiation(self, T_surface, Ta, Wa, stefan_boltzmann_constant, c_air, c_surface):
+    def _calculate_longwave_radiation(self, T_surface, Ta, Wa, stefan_boltzmann_constant, c_air, c_surface, gh_base_eps, gh_wv_mult, gh_wv_coef):
         """Calculates longwave radiation exchange between surface, atmosphere (greenhouse effect), and space."""
-        Tk_surf = T_surface + 273.15
-        Tk_air = Ta + 273.15
+        # Prevent negative Kelvin temperatures
+        Tk_surf = np.maximum(T_surface + 273.15, 0.0)
+        Tk_air = np.maximum(Ta + 273.15, 0.0)
         
         outgoing_surface = stefan_boltzmann_constant * (Tk_surf ** 4)
         
-        # Emissivity of the atmosphere depends heavily on water vapor content (Wa)
-        # Using a simple exponential absorption model
-        eps_a = 1.0 - np.exp(-0.015 * Wa)
+        # Emissivity of the atmosphere depends on baseline GHGs (CO2, etc) plus water vapor (Wa)
+        eps_a = gh_base_eps + gh_wv_mult * (1.0 - np.exp(-gh_wv_coef * np.maximum(Wa, 0.0)))
+        
         
         # Atmosphere emits both up to space and down to surface based on its emissivity
         downwelling_atmosphere = eps_a * stefan_boltzmann_constant * (Tk_air ** 4)
@@ -278,14 +323,22 @@ class DiagnosticClimate(BaseModel):
         
         # Net fluxes
         net_surface_lw = downwelling_atmosphere - outgoing_surface
-        net_air_lw = absorbed_by_atmosphere - downwelling_atmosphere - upwelling_atmosphere
+        # Atmosphere gains from absorbed surface LW; loses only what it emits upward to space.
+        # The downwelling term belongs to the surface budget, not the atmospheric energy balance.
+        # This gives net_air_lw = eps*sigma*(Ts^4 - Ta^4): 0 at equilibrium, stable.
+        net_air_lw = absorbed_by_atmosphere - upwelling_atmosphere
         
         return net_air_lw / c_air, net_surface_lw / c_surface
 
     # Air warming from latent heat released when water vapour condenses into clouds.
     def _calculate_atmosphere_latent_heat(self, Condensation, Lv, c_air):
         # When water vapor condenses into clouds, it releases latent heat into the air.
-        heat_released = Condensation * Lv
+        # Condensation is in mm/hr, convert to kg/m2/s
+        heat_released = (Condensation / 3600.0) * Lv
         dT_air_latent = heat_released / c_air
         return dT_air_latent
+
+
+
+
 

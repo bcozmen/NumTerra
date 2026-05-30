@@ -20,7 +20,7 @@ class AdvectionEngine():
         # Calculate the Coriolis parameter: f = 2 * Omega * sin(latitude)
         self.f = 2.0 * self.omega * np.sin(np.radians(self.latitude))
         
-    def __call__(self, H, Ta, P, V, Wa, Wc, dt):
+    def __call__(self, H, sea_level, Ta, P, V, Wa, Wc, dt):
         """
         Executes one advection tick, updating air temp, atmospheric water, clouds, and wind vector.
         """
@@ -46,10 +46,10 @@ class AdvectionEngine():
             Wa[:] = advect_func(Wa, v_x, v_y, dx, dy, dt)
             Wc[:] = advect_func(Wc, v_x, v_y, dx, dy, dt)
             
-            dTa_oro = self.calculate_orographic_effect(H, v_x, v_y, dx, dy)
+            dTa_oro = self.calculate_orographic_effect(H, sea_level, v_x, v_y, dx, dy)
             Ta[:] = new_Ta + dTa_oro * dt
         else: # Default numpy euler
-            dTa_advect, dWa_advect, dWc_advect = self.calculate_advection(H, Ta, V, Wa, Wc)
+            dTa_advect, dWa_advect, dWc_advect = self.calculate_advection(H, sea_level, Ta, V, Wa, Wc)
             Ta += dTa_advect * dt
             Wa += dWa_advect * dt
             Wc += dWc_advect * dt
@@ -74,16 +74,18 @@ class AdvectionEngine():
         fric_x, fric_y = -self.wind_friction * v_x, -self.wind_friction * v_y
         return np.stack([pgf_x + coriolis_x + fric_x, pgf_y + coriolis_y + fric_y], axis=-1)
 
-    def calculate_orographic_effect(self, H, v_x, v_y, dx, dy):
+    def calculate_orographic_effect(self, H, sea_level, v_x, v_y, dx, dy):
         """
         Computes the vertical adiabatic cooling/warming due to terrain slopes.
         """
+        H = np.maximum(H - sea_level, 0.0)  # Relative height above sea level
+        
         dH_dx, dH_dy = np.gradient(H, dx, dy)
         w = (v_x * dH_dx) + (v_y * dH_dy)
         lapse_rate = 0.0098 # Dry adiabatic lapse rate (K/m)
         return -w * lapse_rate
 
-    def calculate_advection(self, H, Ta, V, Wa, Wc):
+    def calculate_advection(self, H, sea_level, Ta, V, Wa, Wc):
         """
         Calculates the advection using purely vectorised numpy (Euler).
         """
@@ -98,5 +100,5 @@ class AdvectionEngine():
         adv_Wa = -(v_x * dWa_dx + v_y * dWa_dy)
         adv_Wc = -(v_x * dWc_dx + v_y * dWc_dy)
         
-        oro_Ta = self.calculate_orographic_effect(H, v_x, v_y, dx, dy)
+        oro_Ta = self.calculate_orographic_effect(H, sea_level, v_x, v_y, dx, dy)
         return adv_Ta + oro_Ta, adv_Wa, adv_Wc

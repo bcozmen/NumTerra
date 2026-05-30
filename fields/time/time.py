@@ -14,7 +14,7 @@ class TimeConfig:
     start_day: int = 1
     start_hour: int = 6
 
-    dt : int = 1 #time step in hours
+    dt : int = 4 #time step in hours
 class Time(BaseModel):
     info = {
         'name':'time',
@@ -76,6 +76,27 @@ class Time(BaseModel):
     @property
     def timezone_offset(self):
         return int((self.world.longitude + 7.5) // 15.0)  # round to nearest timezone
+
+    # ── Derived properties ────────────────────────────────────────────────────────
+    @property
+    def weekday(self):
+        return self.tick.weekday()  # Monday is 0, Sunday is 6
+
+    @property
+    def is_first_hour_of_day(self):
+        return self.tick.hour == 0
+
+    @property
+    def is_first_hour_of_week(self):
+        return self.tick.hour == 0 and self.tick.weekday() == 0
+
+    @property
+    def is_first_hour_of_month(self):
+        return self.tick.hour == 0 and self.tick.day == 1
+
+    def is_first_hour_of_year(self):
+        return self.tick.hour == 0 and self.tick.month == 1 and self.tick.day == 1
+
 
     # ── seasonal / orbital properties ────────────────────────────────────────
 
