@@ -13,6 +13,27 @@ from fields.observer import Observer
 #Grid axes: x → East, y → North.
 
 @dataclass
+class PhysicalConstants:
+    g : float = 9.80665           # Gravitational acceleration (m/s²)
+    Omega : float = 7.2921e-5    # Earth's angular velocity (rad/s)
+    sigma : float = 5.670374419e-8  # Stefan-Boltzmann constant (W/m²/K⁴)
+    S0 : float = 1361.0          # Solar constant at Earth's distance (W/m²)
+    Lv : float = 2.5e6           # Latent heat of vaporization of water (J/kg)
+    epsilon : float = 0.622      # Ratio of molecular weights water/dry-air (Mw/Md)
+    rho0 : float = 1.225         # Reference air density at sea level (kg/m³)
+
+    P0 : float = 101325.0        # Reference pressure at sea level (Pa)
+    R_DRY_AIR : float = 287.05   # Specific gas constant for dry air (J/kg/K)
+
+    def __getitem__(self, key):
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(f"Physical constant '{key}' not found.")
+    
+    
+
+
+@dataclass
 class WorldConfig:
     size_exponent: int = 8
     max_altitude : float = 1000.0 #max altitude in meters
@@ -38,6 +59,7 @@ class World():
         if worldConfig is None:
             worldConfig = WorldConfig()
         self.__dict__.update(worldConfig.__dict__)
+        self.constants = PhysicalConstants()
         self.time_register = TimeRegister()
         
         self.area = Area(self, size = self.size)

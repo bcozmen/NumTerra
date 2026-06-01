@@ -9,8 +9,6 @@ from .numba import (
 
 @dataclass
 class WindConfig:
-    omega: float = 7.2921e-5  # Earth's angular velocity in radians/s
-    rho_air: float = 1.225  # Air density at sea level in kg/m^3
     lapse_rate: float = 0.0098  # Dry adiabatic lapse rate (K/m)
     wind_friction: float = 0.012  # Friction coefficient for wind
     wind_nudge_factor: float = 0.01  # Strength of nudging towards macro-system vector
@@ -29,12 +27,12 @@ class Wind:
         self.dx, self.dy = world.area.cell_size
         self.advect3 = semi_lagrangian_advect if scheme == 'semi_lagrangian' else euler_advect
         self.poisson_iterations = poisson_iterations
-        self.f = 2.0 * self.config.omega * np.sin(np.radians(world.latitude))
+        self.f = 2.0 * world.constants['Omega'] * np.sin(np.radians(world.latitude))
         self.oscillator = WindOscillator(
                         world, self.config.v_sigma, self.config.v_relaxation,
                         self.config.theta_sigma, self.config.theta_relaxation)
 
-    def get_initial_wind(self, V):
+    def init(self, V):
         rad = np.radians(self.oscillator.theta_from)
         V[..., 0] = -self.oscillator.v * np.sin(rad)
         V[..., 1] = -self.oscillator.v * np.cos(rad)
@@ -43,10 +41,11 @@ class Wind:
 
     def __call__(self, H, sea_level, Ta, P, V, Wa, Wc, dt):
         cfg = self.config
+        V = V.copy()  # don't mutate caller's array in-place
         v_x, v_y = V[..., 0], V[..., 1]
 
         # 1. Physical forces: PGF + Coriolis + Friction (in-place)
-        wind_accelerate(P, v_x, v_y, self.dx, self.dy, cfg.rho_air, self.f, cfg.wind_friction, dt)
+        wind_accelerate(P, v_x, v_y, self.dx, self.dy, self.world.constants['rho0'], self.f, cfg.wind_friction, dt)
 
         # 2. Macro nudge: relax towards stochastic prevailing wind
         v_macro, theta_macro = self.oscillator.step(dt)
@@ -59,10 +58,10 @@ class Wind:
         pressure_project(v_x, v_y, self.dx, self.dy, self.poisson_iterations)
 
         # 4. Advect Ta / Wa / Wc together, then apply orographic cooling to Ta
-        new_Ta, new_Wa, new_Wc = self.advect3(Ta, Wa, Wc, v_x, v_y, self.dx, self.dy, dt)
+        Ta, Wa, Wc = self.advect3(Ta, Wa, Wc, v_x, v_y, self.dx, self.dy, dt)
+        
+        # 5. Orographic cooling: dTa = -Γ * dH, where Γ is the lapse rate and dH is the change in altitude from up/downwind terrain.
         dTa_oro = orographic_cooling(H, sea_level, v_x, v_y, self.dx, self.dy, cfg.lapse_rate)
-        Ta[:] = new_Ta + dTa_oro * dt
-        Wa[:] = new_Wa
-        Wc[:] = new_Wc
+        Ta += dTa_oro * dt
 
         return Ta, Wa, Wc, V

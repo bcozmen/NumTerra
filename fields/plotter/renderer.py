@@ -11,6 +11,13 @@ from matplotlib.colors import (
 # Auto-generated derivative maps always skipped regardless of render.plot.
 _SKIP_SUFFIXES = ("_grad_magnitude", "_grad_i", "_grad_j", "_magnitude")
 
+_PLOT_ORDER = [
+    'H', 'Sun', 'P',
+    'Ta', 'Ts', 'Tw',
+    'Wa', 'Wc', 'Ws',
+    'Evap', 'Condensation', 'Precip',
+]
+
 
 class WorldRenderer(BaseModel):
     """Lightweight real-time renderer attached to a ``fields.World`` instance.
@@ -36,14 +43,12 @@ class WorldRenderer(BaseModel):
         world,
         keys: list[str] | None = None,
         cmaps: dict[str, str] | None = None,
-        ranges: dict[str, tuple[float, float]] | None = None,
         cols: int = 3,
         figsize: tuple[float, float] | None = None,
         rescale: bool = True,
     ):
         super().__init__(world)
         self._extra_cmaps = cmaps or {}   # caller overrides, highest priority
-        self.ranges       = dict(ranges or {})
         self.rescale      = rescale
 
         self.keys = keys if keys is not None else self._available_maps()
@@ -92,10 +97,9 @@ class WorldRenderer(BaseModel):
                 data = self.world.area[key]().copy()
                 if data.ndim != 2:
                     continue
+                vmin, vmax, data = self._clim(key, data)
                 im.set_data(data)
-                if rescale and key not in self.ranges:
-                    vmin, vmax = self._clim(key, data)
-                    im.set_norm(self._make_norm(key, vmin, vmax))
+                im.set_norm(self._make_norm(key, vmin, vmax))
                 self._titles[key].set_text(self._panel_title(key, data))
 
             self._remove_contours(key)
@@ -119,16 +123,23 @@ class WorldRenderer(BaseModel):
     def _get_cmap(self, key: str) -> str:
         return self._render_info(key).get('cmap', 'viridis')
 
-    def _clim(self, key: str, data: np.ndarray) -> tuple[float, float]:
-        """Return (vmin, vmax): caller ranges > render.vrange > auto from data."""
-        if key in self.ranges:
-            return self.ranges[key]
-        vrange = self._render_info(key).get('vrange')
+    def _clim(self, key: str, data: np.ndarray) -> tuple[float, float, np.ndarray]:
+        """Return (vmin, vmax, data): caller ranges > render.vrange > auto from data."""
+        ri = self._render_info(key)
+        
+        if ri.get('mask_sea', False):
+            # 1. Cast data to float so it can safely hold np.nan
+            data = data.astype(np.float64)
+            sea_mask = self.world.area['M_sea']().astype(bool)
+            data = np.where(sea_mask, np.nan, data)
+            
+        vrange = ri.get('vrange')
         if vrange is not None:
-            return tuple(vrange)
+            return vrange[0], vrange[1], data
+            
         vmin = float(np.nanmin(data))
         vmax = float(np.nanmax(data))
-        return (vmin, vmax + 1.0) if vmin == vmax else (vmin, vmax)
+        return vmin, vmax, data
 
     def _make_norm(self, key: str, vmin: float, vmax: float):
         """Build the appropriate matplotlib Normalize subclass for the map's scale."""
@@ -170,6 +181,7 @@ class WorldRenderer(BaseModel):
             if self.world.area[k]().ndim != 2:
                 continue
             result.append(k)
+        result.sort(key=lambda k: _PLOT_ORDER.index(k) if k in _PLOT_ORDER else 1e6)
         return result
 
     def _build(self) -> None:
@@ -189,7 +201,7 @@ class WorldRenderer(BaseModel):
                 title_text = self._height_title()
                 cbar       = self._build_height_colorbar(ax)
             else:
-                vmin, vmax = self._clim(key, data)
+                vmin, vmax, data = self._clim(key, data)
                 norm       = self._make_norm(key, vmin, vmax)
                 im = ax.imshow(data, cmap=self._get_cmap(key), norm=norm,
                                origin="lower", aspect="equal", interpolation="nearest")
