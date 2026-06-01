@@ -11,7 +11,7 @@ class ThermalConfig:
     c_water: float = 4.184e7 # ~10m deep active mixing layer (1000kg/m3 * 10m * 4184 J/kg/K)
     
     # Radiation parameters
-    sensible_heat_coef: float = 4.0 # Coefficient for sensible heat exchange
+    sensible_heat_coef: float = 1.0 # Coefficient for sensible heat exchange
     albedo_land: float = 0.25  # Average albedo for land
     albedo_water: float = 0.06 # Average albedo for water
 
@@ -19,8 +19,8 @@ class ThermalConfig:
     lapse_rate: float = 0.0065 # Temperature drop per meter altitude (K/m)
         
     # Longwave radiation parameters
-    greenhouse_base_emissivity: float = 0.55  # Baseline emissivity from well-mixed GHGs (CO2, etc)
-    greenhouse_water_vapor_emissivity_multiplier: float = 0.2 # Water vapor contribution; base + this must stay <= 1.0
+    greenhouse_base_emissivity: float = 0.45  # Baseline emissivity from well-mixed GHGs (CO2, etc)
+    greenhouse_water_vapor_emissivity_multiplier: float = 0.3 # Water vapor contribution; base + this must stay <= 1.0
     greenhouse_water_vapor_absorption_coef: float = 0.04  # Absorption coef; saturates around Wa~50 kg/m²
 
     # Atmospheric solar absorption: fraction of surface-reaching solar that was absorbed by the atmosphere
@@ -94,6 +94,8 @@ class Thermal:
         dTa = dT_air_sensible + dT_air_latent + dT_air_lw + dT_air_solar
         dTs = (dT_land_solar_evap  + dT_land_lw  - dT_land_loss)  * (1 - M_sea)
         dTw = (dT_water_solar_evap + dT_water_lw - dT_water_loss) * M_sea
+        return dTa, dTs, dTw
+
     ## ========== Vertical Thermodynamics ==========
     # Wind-driven turbulent heat exchange between surface and overlying air.
     def calculate_sensible_heat(self, T_surface, Ta, Vspeed, sensible_heat_coef, c_air, c_surface):

@@ -9,13 +9,13 @@ class HydroConfig:
     layer_pressure_drop: float = 15000.0 # Pressure drop per atmospheric layer for moisture estimation (Pa)
     pressure_lapse_rate: float = 0.0008  # Rough temperature drop per Pa
 
-    Ce_water : float = 0.0015 # Evaporation coefficient over water (tunable parameter for evaporation rate)
-    Ce_land : float = 0.0008  # Evaporation coefficient over land
+    Ce_water : float = 4.16e-7 # Evaporation coefficient over water (dim-less roughly ~1e-3, but previously absorbed 3600)
+    Ce_land : float = 2.22e-7  # Evaporation coefficient over land
     lake_evap_threshold: float = 20.0  # mm; land cells with Ws above this are treated as inland lakes and use Ce_water
     precip_conversion_rate : float = 1.0 # Tunable parameter for actual precipitation conversion
-    cloud_delay_factor : float = 0.5 # Proportion of precip that remains as clouds per tick
+    cloud_delay_factor : float = 0.2 # Proportion of precip that remains as clouds per tick
     rH_condensation_threshold: float = 0.85  # Relative humidity at which clouds start forming (0-1)
-    condensation_timescale: float = 3.0       # Hours over which excess vapor relaxes to clouds; shorter = harder threshold
+    condensation_timescale: float = 6.0       # Hours over which excess vapor relaxes to clouds; shorter = harder threshold
 
 class Hydro:
     def __init__(self, world, atmospheric_layer_count):
@@ -23,10 +23,10 @@ class Hydro:
         self.config = HydroConfig()
         self.atmospheric_layer_count = atmospheric_layer_count
 
-    def __call__(self, P, Ta, Wa, Wc, M_sea, Ws, Vspeed):
+    def __call__(self, P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed):
         dt = self.world['time'].dt
         Wa_max, Evap, Condensation, Precip = compute_hydro_step(
-            P, Ta, Wa, Wc, M_sea, Ws, Vspeed,
+            P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed,
             self.config.moisture_capacity_constant, self.config.layer_pressure_drop, self.config.pressure_lapse_rate, self.world.constants['g'],
             self.config.lake_evap_threshold, self.config.Ce_water, self.config.Ce_land, dt,
             self.config.rH_condensation_threshold, self.config.condensation_timescale, self.config.precip_conversion_rate, self.config.cloud_delay_factor,
@@ -39,7 +39,7 @@ class Hydro:
         
         Returns updated (Ta, Wa, Wc, Ws, Condensation).
         """
-        apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, self.world.constants['Lv'], thermal.config.c_air)
+        apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt)
         return Ta, Wa, Wc, Ws, Condensation
 
 
@@ -49,9 +49,10 @@ class HydroNoNumba:
         self.world = world
         self.config = HydroConfig()
 
-    def __call__(self, P, Ta, Wa, Wc, M_sea, Ws, Vspeed):
+    def __call__(self, P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed):
         Wa_max = self._calculate_max_moisture(Ta, P)
-        Evap = self._calculate_evaporation(M_sea, Wa_max, Wa, Vspeed, Ws)
+        Wa_max_surf = self._calculate_max_moisture(Ts * (1 - M_sea) + Tw * M_sea, P)
+        Evap = self._calculate_evaporation(M_sea, Wa_max_surf, Wa, Vspeed, Ws)
         Condensation, Precip = self._calculate_precipitation(Wa, Wc, Wa_max)
         return Wa_max, Evap, Condensation, Precip
 
@@ -94,8 +95,8 @@ class HydroNoNumba:
         M_lake = np.float32(Ws > self.config.lake_evap_threshold) * (1.0 - M_sea)
         Ce_land_eff = M_lake * self.config.Ce_water + (1.0 - M_lake) * self.config.Ce_land
 
-        evap_potential_water = self.config.Ce_water * Vspeed * np.maximum(0.0, Wa_max - Wa)
-        evap_potential_land  = Ce_land_eff         * Vspeed * np.maximum(0.0, Wa_max - Wa)
+        evap_potential_water = self.config.Ce_water * Vspeed * np.maximum(0.0, Wa_max - Wa) * 3600.0
+        evap_potential_land  = Ce_land_eff         * Vspeed * np.maximum(0.0, Wa_max - Wa) * 3600.0
 
         sea_evaporation = evap_potential_water
         # Land evaporation is limited by the actual soil moisture available per hour
@@ -144,9 +145,6 @@ class HydroNoNumba:
 
         excess_cond = excess / dt
         if np.any(excess_cond > 0):
-            dTa_excess = thermal.calculate_atmosphere_latent_heat(
-                excess_cond, self.world.constants['Lv'], thermal.config.c_air)
-            Ta += dTa_excess * (dt * 3600.0)
             Condensation += excess_cond
 
         return Ta, Wa, Wc, Ws, Condensation

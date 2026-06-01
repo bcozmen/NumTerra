@@ -13,6 +13,7 @@ class WindConfig:
     wind_friction: float = 0.012  # Friction coefficient for wind
     wind_nudge_factor: float = 0.01  # Strength of nudging towards macro-system vector
 
+
     v_sigma : float = 1.0 # Standard deviation of wind speed fluctuations (m/s)
     v_relaxation : float = 72.0  # Time scale for wind speed to relax back to prevailing speed (hours)
 
@@ -43,6 +44,7 @@ class Wind:
         cfg = self.config
         V = V.copy()  # don't mutate caller's array in-place
         v_x, v_y = V[..., 0], V[..., 1]
+        dt_sec = dt * 3600.0
 
         # 1. Physical forces: PGF + Coriolis + Friction (in-place)
         wind_accelerate(P, v_x, v_y, self.dx, self.dy, self.world.constants['rho0'], self.f, cfg.wind_friction, dt)
@@ -58,10 +60,12 @@ class Wind:
         pressure_project(v_x, v_y, self.dx, self.dy, self.poisson_iterations)
 
         # 4. Advect Ta / Wa / Wc together, then apply orographic cooling to Ta
-        Ta, Wa, Wc = self.advect3(Ta, Wa, Wc, v_x, v_y, self.dx, self.dy, dt)
+        Ta, Wa, Wc = self.advect3(Ta, Wa, Wc, v_x, v_y, self.dx, self.dy, dt_sec)
         
         # 5. Orographic cooling: dTa = -Γ * dH, where Γ is the lapse rate and dH is the change in altitude from up/downwind terrain.
-        dTa_oro = orographic_cooling(H, sea_level, v_x, v_y, self.dx, self.dy, cfg.lapse_rate)
-        Ta += dTa_oro * dt
+        H_m = H * self.world.max_altitude
+        sea_level_m = sea_level * self.world.max_altitude
+        dTa_oro = orographic_cooling(H_m, sea_level_m, v_x, v_y, self.dx, self.dy, cfg.lapse_rate)
+        Ta += dTa_oro * dt_sec
 
         return Ta, Wa, Wc, V

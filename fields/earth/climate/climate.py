@@ -142,10 +142,11 @@ class Climate(BaseModel):
         
         Sun, Shadow = self.sun(H, H_grad_i, H_grad_j, M_sea, Wa, Wc)
 
+        # Keep thermal and moisture budgets in phase: use hydro fluxes from this same step.
+        Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed)
+        
         dTa, dTs, dTw = self.thermal(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc)
         Ta, Ts, Tw = Ta + dTa * dt_seconds, Ts + dTs * dt_seconds, Tw + dTw * dt_seconds
-
-        Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Wa, Wc, M_sea, Ws, Vspeed)
 
         Ta, Wa, Wc, Ws, Condensation = self.hydro.apply_mass_balance(
             Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, self.thermal
@@ -192,7 +193,7 @@ class Climate(BaseModel):
         # Temperature is diagnostic but initialized here since it's needed for pressure and hydro
         Ta, Ts, Tw = self.thermal.init(H, M_sea)
         P = self.pressure(H, Ta, Wa)
-        Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Wa, Wc, M_sea, Ws, Vspeed)
+        Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed)
 
         self.set_maps({'Ta' : Ta, 'Ts' : Ts, 'Tw' : Tw, 'P' : P,
                         'Wa_max' : Wa_max, 'Evap' : Evap, 'Condensation' : Condensation, 'Precip' : Precip,

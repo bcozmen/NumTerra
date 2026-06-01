@@ -314,10 +314,10 @@ class WorldRenderer(BaseModel):
             return None
 
         rows, cols = V.shape[:2]
-        X   = np.arange(rows)
-        Y   = np.arange(cols)
-        U   = V[..., 0].astype(np.float64)   # i-component -> screen y
-        V_y = V[..., 1].astype(np.float64)   # j-component -> screen x
+        X   = np.arange(cols)
+        Y   = np.arange(rows)
+        U   = V[..., 0].astype(np.float64)
+        V_y = V[..., 1].astype(np.float64)
 
         vmax = float(np.nanmax(V_mag))
         vmax = vmax if vmax > 0 else 1.0

@@ -5,9 +5,9 @@ from .numba import d8_water_routing
 
 @dataclass
 class WaterConfig:
-    slope_exponent: float = 2.0   # Weight steeper slopes more: 1=linear, 2=quadratic, …
-    flow_rate: float = 0.5        # Fraction of cell's water drained per hour at maximum weight
-    field_capacity: float = 20.0  # Soil moisture held by capillary forces [mm]; only excess above this routes
+    slope_exponent: float = 2.0     # Weight steeper slopes more: 1=linear, 2=quadratic, …
+    flow_rate: float = 1.38e-4      # Fraction of cell's water drained per second at maximum weight (0.5 / 3600)
+    field_capacity: float = 20.0    # Soil moisture held by capillary forces [mm]; only excess above this routes
 
 
 
@@ -37,9 +37,11 @@ class Water():
         Ws_runoff  = np.maximum(Ws - self.config.field_capacity, 0.0) * (1.0 - M_sea)
         Ws_retained = Ws - Ws_runoff
 
+        dt_sec = dt * 3600.0
+
         Ws_runoff_routed = d8_water_routing(
             surface, M_sea, Ws_runoff,
             self.world.max_altitude, self.world.area.cell_size[0], self.world.area.cell_size[1],
-            dt, self.config.slope_exponent, self.config.flow_rate,
+            dt_sec, self.config.slope_exponent, self.config.flow_rate,
         )
         return Ws_retained + Ws_runoff_routed

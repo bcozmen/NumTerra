@@ -3,7 +3,7 @@ import math
 from numba import njit, prange
 
 @njit(parallel=True)
-def compute_hydro_step(P, Ta, Wa, Wc, M_sea, Ws, Vspeed, 
+def compute_hydro_step(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed, 
                        moisture_capacity_constant, layer_pressure_drop, pressure_lapse_rate, g,
                        lake_evap_threshold, Ce_water, Ce_land, dt,
                        rH_condensation_threshold, condensation_timescale, precip_conversion_rate, cloud_delay_factor,
@@ -45,9 +45,33 @@ def compute_hydro_step(P, Ta, Wa, Wc, M_sea, Ws, Vspeed,
                 
             Wa_max[i, j] = wa_max_val
             
+            # 1b. Wa_max computing for surface to drive evaporation
+            p_curr = P[i, j]
+            m_sec = M_sea[i, j]
+            if m_sec > 0.0:
+                t_surf = Tw[i, j]
+            else:
+                t_surf = Ts[i, j]
+            
+            wa_max_surf = 0.0
+            for _ in range(atmospheric_layer_count):
+                p_safe = max(p_curr, 1e-5)
+                es = 6.112 * math.exp((17.67 * t_surf) / (t_surf + 243.5)) * 100.0
+                if es > 0.99 * p_safe:
+                    es = 0.99 * p_safe
+                
+                denom = p_safe - (1.0 - moisture_capacity_constant) * es
+                denom = max(denom, 1e-6)
+                qs = moisture_capacity_constant * es / denom
+                
+                if p_curr > 0:
+                    wa_max_surf += qs * layer_mass
+                
+                p_curr -= layer_pressure_drop
+                t_surf -= pressure_lapse_rate * layer_pressure_drop
+
             # 2. Evap calculation
             v_sp = Vspeed[i, j] + 0.1
-            m_sec = M_sea[i, j]
             ws_val = Ws[i, j]
             wa_val = Wa[i, j]
             
@@ -58,9 +82,10 @@ def compute_hydro_step(P, Ta, Wa, Wc, M_sea, Ws, Vspeed,
                 
             ce_land_eff = m_lake * Ce_water + (1.0 - m_lake) * Ce_land
             
-            wa_diff = max(0.0, wa_max_val - wa_val)
-            evap_pot_water = Ce_water * v_sp * wa_diff
-            evap_pot_land = ce_land_eff * v_sp * wa_diff
+            wa_diff = max(0.0, wa_max_surf - wa_val)
+            # evaporation physics gives mm/s, multiply by 3600 to get mm/hr
+            evap_pot_water = Ce_water * v_sp * wa_diff * 3600.0
+            evap_pot_land = ce_land_eff * v_sp * wa_diff * 3600.0
             
             land_evap = evap_pot_land
             if land_evap > ws_val / dt:
@@ -77,7 +102,7 @@ def compute_hydro_step(P, Ta, Wa, Wc, M_sea, Ws, Vspeed,
     return Wa_max, Evap, Condensation, Precip
 
 @njit(parallel=True)
-def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, Lv, c_air):
+def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt):
     rows, cols = Ta.shape
     for i in prange(rows):
         for j in range(cols):
@@ -101,9 +126,6 @@ def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip,
                 wc += excess
                 
                 excess_cond = excess / dt
-                heat_released = (excess_cond / 3600.0) * Lv
-                dta_excess = heat_released / c_air
-                Ta[i, j] += dta_excess * (dt * 3600.0)
                 Condensation[i, j] = cond + excess_cond
                 
             Wa[i, j] = wa
@@ -126,10 +148,10 @@ def d8_water_routing(surface, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponen
     Ws             : float32 (rows, cols)  — surface water [mm]
     max_altitude   : float                 — physical height of H=1 [m]
     dx, dy         : float                 — cell size [m]
-    dt             : float                 — timestep [hr]
+    dt             : float                 — timestep [s]
     slope_exponent : float                 — steeper slopes receive exponentially more flow
                                              (1 = linear, 2 = quadratic, …)
-    flow_rate      : float                 — fraction of water drained per hour at full slope
+    flow_rate      : float                 — fraction of water drained per second at full slope
 
     Returns
     -------
