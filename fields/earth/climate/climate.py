@@ -61,17 +61,17 @@ map_info = {
     'Wa_max' : {
         'unit' : 'kg/m²',
         'description' : 'Maximum atmospheric water capacity',
-        #'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
+        'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
     },
     'Evap' : {
         'unit' : 'mm/hr',
         'description' : 'Evaporation rate',
-        #'render' : {'cmap': 'PuBu', 'scale': 'linear'},
+        'render' : {'cmap': 'PuBu', 'scale': 'linear'},
     },
     'Condensation' : {
         'unit' : 'mm/hr',
         'description' : 'Condensation rate (vapor to cloud)',
-        #'render' : {'cmap': 'PuBuGn', 'scale': 'linear'},
+        'render' : {'cmap': 'PuBuGn', 'scale': 'linear'},
     },
     'Precip' : {
         'unit' : 'mm/hr',

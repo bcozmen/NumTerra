@@ -8,9 +8,9 @@ class SunConfig:
     horizon_n_dirs : int = 16  # Number of azimuth directions for the precomputed horizon shadow map.
                                # Higher = more accurate shadow edges; 16 is a good default.
     # Solar transmission parameters
-    cloud_transmission_coef: float = 2.0 # Extinction coeff for clouds in shortwave
-    vapor_transmission_coef: float = 0.005 # Extinction coeff for water vapor in shortwave
-    base_solar_transmission: float = 0.70 # Global baseline atmospheric shortwave transmission
+    cloud_transmission_coef: float = 1.5 # Extinction coeff for clouds in shortwave
+    vapor_transmission_coef: float = 0.01 # Extinction coeff for water vapor in shortwave
+    base_solar_transmission: float = 0.5 # Global baseline atmospheric shortwave transmission
 
 class Sun:
     #TODO Sun gradients do not use water surface gradients (instead calculates slope for water as if no water)
