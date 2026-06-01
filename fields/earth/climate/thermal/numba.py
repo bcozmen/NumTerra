@@ -42,7 +42,7 @@ def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Pre
                 outgoing_surface_land = sigma * (Tk_surf ** 4)
                 absorbed_by_atmosphere_land = eps_a * outgoing_surface_land
                 net_surface_lw_land = atmos_emission - outgoing_surface_land
-                net_air_lw_land = absorbed_by_atmosphere_land - atmos_emission
+                net_air_lw_land = absorbed_by_atmosphere_land - 2.0 * atmos_emission
 
                 dT_air_lw_land = net_air_lw_land / c_air
                 dT_land_lw = net_surface_lw_land / c_land
@@ -66,7 +66,7 @@ def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Pre
                 outgoing_surface_water = sigma * (Tk_surf ** 4)
                 absorbed_by_atmosphere_water = eps_a * outgoing_surface_water
                 net_surface_lw_water = atmos_emission - outgoing_surface_water
-                net_air_lw_water = absorbed_by_atmosphere_water - atmos_emission
+                net_air_lw_water = absorbed_by_atmosphere_water - 2.0 * atmos_emission
 
                 dT_air_lw_water = net_air_lw_water / c_air
                 dT_water_lw = net_surface_lw_water / c_water

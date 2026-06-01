@@ -20,13 +20,13 @@ class ThermalConfig:
         
     # Longwave radiation parameters
     greenhouse_base_emissivity: float = 0.45  # Baseline emissivity from well-mixed GHGs (CO2, etc)
-    greenhouse_water_vapor_emissivity_multiplier: float = 0.3 # Water vapor contribution; base + this must stay <= 1.0
+    greenhouse_water_vapor_emissivity_multiplier: float = 0.5 # Water vapor contribution; base + this must stay <= 1.0
     greenhouse_water_vapor_absorption_coef: float = 0.04  # Absorption coef; saturates around Wa~50 kg/m²
 
-    # Atmospheric solar absorption: fraction of surface-reaching solar that was absorbed by the atmosphere
-    # above (by ozone, water vapour, aerosols). ~30 % of TOA solar never reaches the ground; roughly half
-    # of that is absorbed (rest reflected). 0.20 ≈ 15% of TOA absorbed / 70% transmitted = ~0.21.
-    solar_atm_absorption: float = 0.20
+    # Atmospheric shortwave heating term applied to the air column.
+    # `Sun` is already defined as surface-reaching flux in climate.py map_info, so adding a
+    # non-zero value here can double-count incoming solar energy.
+    solar_atm_absorption: float = 0.0
 
 
 
@@ -54,7 +54,7 @@ class Thermal:
         T_diurnal_offset = 5.0 * np.cos(hour_angle) # +/- 5C swing
 
         T_base = T_mean + T_season_offset + T_diurnal_offset
-        Ta = (T_base - (self.config.lapse_rate/4) * H_m).astype(np.float32)
+        Ta = (T_base - (self.config.lapse_rate) * H_m).astype(np.float32)
         Ts = Ta.copy()
         Tw = np.where(M_sea, np.float32(T_base), Ta).astype(np.float32)
         
@@ -123,19 +123,19 @@ class Thermal:
         eps_a = np.clip(gh_base_eps + gh_wv_mult * (1.0 - np.exp(-gh_wv_coef * np.maximum(Wa, 0.0))), 0.0, 1.0)
         
         
-        # Atmosphere emits both up to space and down to surface based on its emissivity
-        downwelling_atmosphere = eps_a * stefan_boltzmann_constant * (Tk_air ** 4)
-        upwelling_atmosphere = eps_a * stefan_boltzmann_constant * (Tk_air ** 4)
+        # Atmosphere emits both up to space and down to surface based on its emissivity.
+        # Both are energy losses for the atmospheric layer.
+        atmos_emission = eps_a * stefan_boltzmann_constant * (Tk_air ** 4)
+        downwelling_atmosphere = atmos_emission
+        upwelling_atmosphere = atmos_emission
         
         # Atmosphere absorbs a fraction of outgoing surface radiation
         absorbed_by_atmosphere = eps_a * outgoing_surface
         
         # Net fluxes
         net_surface_lw = downwelling_atmosphere - outgoing_surface
-        # Atmosphere gains from absorbed surface LW; loses only what it emits upward to space.
-        # The downwelling term belongs to the surface budget, not the atmospheric energy balance.
-        # This gives net_air_lw = eps*sigma*(Ts^4 - Ta^4): 0 at equilibrium, stable.
-        net_air_lw = absorbed_by_atmosphere - upwelling_atmosphere
+        # Atmosphere gains from absorbed surface LW and loses both upward and downward emission.
+        net_air_lw = absorbed_by_atmosphere - (upwelling_atmosphere + downwelling_atmosphere)
         
         return net_air_lw / c_air, net_surface_lw / c_surface
 

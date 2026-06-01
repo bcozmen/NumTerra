@@ -13,9 +13,9 @@ class HydroConfig:
     Ce_land : float = 2.22e-7  # Evaporation coefficient over land
     lake_evap_threshold: float = 20.0  # mm; land cells with Ws above this are treated as inland lakes and use Ce_water
     precip_conversion_rate : float = 1.0 # Tunable parameter for actual precipitation conversion
-    cloud_delay_factor : float = 0.2 # Proportion of precip that remains as clouds per tick
+    cloud_delay_factor : float = 0.5 # Proportion of precip that remains as clouds per tick
     rH_condensation_threshold: float = 0.85  # Relative humidity at which clouds start forming (0-1)
-    condensation_timescale: float = 6.0       # Hours over which excess vapor relaxes to clouds; shorter = harder threshold
+    condensation_timescale: float = 3.0       # Hours over which excess vapor relaxes to clouds; shorter = harder threshold
 
 class Hydro:
     def __init__(self, world, atmospheric_layer_count):
