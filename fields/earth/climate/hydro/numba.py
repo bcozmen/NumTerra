@@ -1,6 +1,115 @@
 import numpy as np
+import math
 from numba import njit, prange
 
+@njit(parallel=True)
+def compute_hydro_step(P, Ta, Wa, Wc, M_sea, Ws, Vspeed, 
+                       moisture_capacity_constant, layer_pressure_drop, pressure_lapse_rate, g,
+                       lake_evap_threshold, Ce_water, Ce_land, dt,
+                       rH_condensation_threshold, condensation_timescale, precip_conversion_rate, cloud_delay_factor,
+                       atmospheric_layer_count):
+    rows, cols = P.shape
+    Wa_max = np.zeros_like(P)
+    Evap = np.zeros_like(P)
+    Condensation = np.zeros_like(P)
+    Precip = np.zeros_like(P)
+
+    alpha = 1.0 - math.exp(-dt / condensation_timescale)
+    removal_rate = precip_conversion_rate * (1.0 - cloud_delay_factor)
+    removed_fraction = 1.0 - math.exp(-removal_rate * dt)
+    layer_mass = layer_pressure_drop / g
+
+    for i in prange(rows):
+        for j in range(cols):
+            # 1. Wa_max calculation
+            p_curr = P[i, j]
+            ta_curr = Ta[i, j]
+            wa_max_val = 0.0
+            
+            for _ in range(atmospheric_layer_count):
+                p_safe = max(p_curr, 1e-5)
+                # Magnus-Tetens
+                es = 6.112 * math.exp((17.67 * ta_curr) / (ta_curr + 243.5)) * 100.0
+                if es > 0.99 * p_safe:
+                    es = 0.99 * p_safe
+                
+                denom = p_safe - (1.0 - moisture_capacity_constant) * es
+                denom = max(denom, 1e-6)
+                qs = moisture_capacity_constant * es / denom
+                
+                if p_curr > 0:
+                    wa_max_val += qs * layer_mass
+                
+                p_curr -= layer_pressure_drop
+                ta_curr -= pressure_lapse_rate * layer_pressure_drop
+                
+            Wa_max[i, j] = wa_max_val
+            
+            # 2. Evap calculation
+            v_sp = Vspeed[i, j] + 0.1
+            m_sec = M_sea[i, j]
+            ws_val = Ws[i, j]
+            wa_val = Wa[i, j]
+            
+            if ws_val > lake_evap_threshold:
+                m_lake = 1.0 - m_sec
+            else:
+                m_lake = 0.0
+                
+            ce_land_eff = m_lake * Ce_water + (1.0 - m_lake) * Ce_land
+            
+            wa_diff = max(0.0, wa_max_val - wa_val)
+            evap_pot_water = Ce_water * v_sp * wa_diff
+            evap_pot_land = ce_land_eff * v_sp * wa_diff
+            
+            land_evap = evap_pot_land
+            if land_evap > ws_val / dt:
+                land_evap = ws_val / dt
+                
+            Evap[i, j] = m_sec * evap_pot_water + (1.0 - m_sec) * land_evap
+            
+            # 3. Condensation and Precip
+            cond = alpha * max(0.0, wa_val - rH_condensation_threshold * wa_max_val) / dt
+            Condensation[i, j] = cond
+            
+            Precip[i, j] = (Wc[i, j] * removed_fraction) / dt
+
+    return Wa_max, Evap, Condensation, Precip
+
+@njit(parallel=True)
+def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, Lv, c_air):
+    rows, cols = Ta.shape
+    for i in prange(rows):
+        for j in range(cols):
+            evap = Evap[i, j]
+            cond = Condensation[i, j]
+            prec = Precip[i, j]
+            
+            wa = Wa[i, j] + (evap - cond) * dt
+            wc = Wc[i, j] + (cond - prec) * dt
+            ws = Ws[i, j] + (prec - evap) * dt
+            
+            if wa < 0.0: wa = 0.0
+            if wc < 0.0: wc = 0.0
+            if wc < 1e-10: wc = 0.0
+            if ws < 0.0: ws = 0.0
+            
+            wa_m = Wa_max[i, j]
+            excess = wa - wa_m
+            if excess > 0.0:
+                wa -= excess
+                wc += excess
+                
+                excess_cond = excess / dt
+                heat_released = (excess_cond / 3600.0) * Lv
+                dta_excess = heat_released / c_air
+                Ta[i, j] += dta_excess * (dt * 3600.0)
+                Condensation[i, j] = cond + excess_cond
+                
+            Wa[i, j] = wa
+            Wc[i, j] = wc
+            Ws[i, j] = ws
+            
 @njit(parallel=True)
 def d8_water_routing(surface, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flow_rate):
     """

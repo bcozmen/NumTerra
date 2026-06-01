@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import numpy as np
 
+from .numba import compute_thermal_step
+
 @dataclass
 class ThermalConfig:
     # Effective heat capacities for the whole vertical column (J/m2/K)
@@ -60,6 +62,16 @@ class Thermal:
 
     def __call__(self, M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc):
         """Computes thermodynamic changes (dTa, dTs, dTw) tracking sensible/latent heat, solar, and evaporative cooling."""
+        return compute_thermal_step(
+            M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc,
+            self.config.sensible_heat_coef, self.config.c_air, self.config.c_land, self.config.c_water,
+            self.world.constants['Lv'], self.world.constants['sigma'],
+            self.config.greenhouse_base_emissivity, self.config.greenhouse_water_vapor_emissivity_multiplier, self.config.greenhouse_water_vapor_absorption_coef,
+            self.config.albedo_land, self.config.albedo_water, self.config.solar_atm_absorption
+        )
+
+    def __call_without_numba__(self, M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc):
+        """Computes thermodynamic changes (dTa, dTs, dTw) tracking sensible/latent heat, solar, and evaporative cooling."""
         dT_air_from_land,  dT_land_loss  = self.calculate_sensible_heat(Ts, Ta, Vspeed, self.config.sensible_heat_coef, self.config.c_air, self.config.c_land)
         dT_air_from_water, dT_water_loss = self.calculate_sensible_heat(Tw, Ta, Vspeed, self.config.sensible_heat_coef, self.config.c_air, self.config.c_water)
 
@@ -82,8 +94,6 @@ class Thermal:
         dTa = dT_air_sensible + dT_air_latent + dT_air_lw + dT_air_solar
         dTs = (dT_land_solar_evap  + dT_land_lw  - dT_land_loss)  * (1 - M_sea)
         dTw = (dT_water_solar_evap + dT_water_lw - dT_water_loss) * M_sea
-
-        return dTa, dTs, dTw
     ## ========== Vertical Thermodynamics ==========
     # Wind-driven turbulent heat exchange between surface and overlying air.
     def calculate_sensible_heat(self, T_surface, Ta, Vspeed, sensible_heat_coef, c_air, c_surface):

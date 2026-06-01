@@ -51,7 +51,7 @@ map_info = {
     'Shadow' : {
         'unit' : 'bool/float',
         'description' : 'Shadow map (0.0 = completely shadowed, 1.0 = fully lit)',
-        'render' : {'cmap': 'gray'},
+        #'render' : {'cmap': 'gray'},
     },
     'P' : {
         'unit' : 'Pa',
@@ -61,17 +61,17 @@ map_info = {
     'Wa_max' : {
         'unit' : 'kg/m²',
         'description' : 'Maximum atmospheric water capacity',
-        'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
+        #'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
     },
     'Evap' : {
         'unit' : 'mm/hr',
         'description' : 'Evaporation rate',
-        'render' : {'cmap': 'PuBu', 'scale': 'linear'},
+        #'render' : {'cmap': 'PuBu', 'scale': 'linear'},
     },
     'Condensation' : {
         'unit' : 'mm/hr',
         'description' : 'Condensation rate (vapor to cloud)',
-        'render' : {'cmap': 'PuBuGn', 'scale': 'linear'},
+        #'render' : {'cmap': 'PuBuGn', 'scale': 'linear'},
     },
     'Precip' : {
         'unit' : 'mm/hr',
@@ -84,9 +84,10 @@ map_info = {
 @dataclass
 class ClimateConfig:
     # Advection parameters
-    adv_sub_steps: int = 4 # Number of sub-steps for advection calculations to improve stability
+    atmospheric_layer_count: int = 3  # Number of layers to integrate for Wa_max estimation
+    adv_sub_steps: int = 2 # Number of sub-steps for advection calculations to improve stability
     advection_scheme: str = 'semi_lagrangian' # Advection integration scheme
-    advection_poisson_iterations: int = 15 # Iterations for Poisson solver to enforce mass continuity in advection
+    advection_poisson_iterations: int = 10 # Iterations for Poisson solver to enforce mass continuity in advection
 
 
 class Climate(BaseModel):
@@ -102,7 +103,7 @@ class Climate(BaseModel):
         self.sun = Sun(self.world)
         self.thermal = Thermal(self.world)
         self.pressure = Pressure(self.world)
-        self.hydro = Hydro(self.world)
+        self.hydro = Hydro(self.world, self.config.atmospheric_layer_count)
 
         self.wind = Wind(self.world, self.config.advection_scheme, self.config.advection_poisson_iterations)
         self.water = Water(self.world)

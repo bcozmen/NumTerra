@@ -1,5 +1,6 @@
 import numpy as np
 from dataclasses import dataclass, field
+from .numba import compute_hydro_step, apply_mass_balance_numba
 
 @dataclass
 class HydroConfig:
@@ -17,6 +18,33 @@ class HydroConfig:
     condensation_timescale: float = 3.0       # Hours over which excess vapor relaxes to clouds; shorter = harder threshold
 
 class Hydro:
+    def __init__(self, world, atmospheric_layer_count):
+        self.world = world
+        self.config = HydroConfig()
+        self.atmospheric_layer_count = atmospheric_layer_count
+
+    def __call__(self, P, Ta, Wa, Wc, M_sea, Ws, Vspeed):
+        dt = self.world['time'].dt
+        Wa_max, Evap, Condensation, Precip = compute_hydro_step(
+            P, Ta, Wa, Wc, M_sea, Ws, Vspeed,
+            self.config.moisture_capacity_constant, self.config.layer_pressure_drop, self.config.pressure_lapse_rate, self.world.constants['g'],
+            self.config.lake_evap_threshold, self.config.Ce_water, self.config.Ce_land, dt,
+            self.config.rH_condensation_threshold, self.config.condensation_timescale, self.config.precip_conversion_rate, self.config.cloud_delay_factor,
+            self.atmospheric_layer_count
+        )
+        return Wa_max, Evap, Condensation, Precip
+
+    def apply_mass_balance(self, Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, thermal):
+        """Applies mass balance and enforces non-negativity and hard saturation cap.
+        
+        Returns updated (Ta, Wa, Wc, Ws, Condensation).
+        """
+        apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, self.world.constants['Lv'], thermal.config.c_air)
+        return Ta, Wa, Wc, Ws, Condensation
+
+
+
+class HydroNoNumba:
     def __init__(self, world):
         self.world = world
         self.config = HydroConfig()

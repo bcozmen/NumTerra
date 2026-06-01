@@ -91,7 +91,7 @@ class WorldRenderer(BaseModel):
 
     # -- public API ------------------------------------------------------------
 
-    def step(self) -> None:
+    def step(self, save_path = None) -> None:
         """Redraw all panels with the current world state (no simulation step)."""
         for key in self._ims:
             ax = self._ax_map[key]
@@ -112,6 +112,9 @@ class WorldRenderer(BaseModel):
         if time_model is not None:
             self.fig.suptitle(str(time_model), fontsize=11)
 
+        if save_path is not None:
+            date = str(time_model).replace("/", "-").replace(" ", "_").replace(":", "-")
+            self.fig.savefig(save_path + '_' + date + '.jpg', dpi=150)
         self._flush()
 
     # -- render-config helpers -------------------------------------------------

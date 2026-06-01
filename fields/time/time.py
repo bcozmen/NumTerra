@@ -14,7 +14,7 @@ class TimeConfig:
     start_day: int = 1
     start_hour: int = 6
 
-    dt : int = 4 #time step in hours
+    dt : int = 2 #time step in hours
 class Time(BaseModel):
     info = {
         'name':'time',
