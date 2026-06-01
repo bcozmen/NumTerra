@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 import matplotlib.pyplot as plt
+from collections import deque
 
 _SKIP = ("_grad_i", "_grad_j")
 
@@ -126,16 +127,49 @@ class Observer(BaseModel):
 
         plt.show()
     
-    def print(self, keys = None,frequency = 100):
+    def print(self, keys=None, frequency=100, last_n=None):
+        last_date = self.world['time'].date
         if keys is None:
             keys = list(self.stats.keys())
-        print("Details of hourly percentiles:")
-        print(f"Frequency: Every {frequency} steps")
-        print(f"Percentiles: {self.cfg.percentiles}")
+
+        def fmt(x, width=12):
+            return f"{x:{width}.6g}"
+
+        p_labels = [f"p{int(100 * p):02d}" for p in self.cfg.percentiles]
+
+        print("\nObserver Statistics")
+        print("=" * 120)
+        print(f"Current date       : {last_date}")
+        print(f"Sampling frequency : every {frequency} observations")
+        print(f"Percentiles        : {', '.join(p_labels)}")
+
         for k in keys:
-            s = np.array(self.stats[k]['hourly'])[::frequency]
-            print(f"Hourly percentiles for {k} with frequency {frequency}:")
-            for ix, ts in enumerate(s):
-                step = ix * frequency
-                day = step * self.world['time'].dt / 24
-                print(f"  Step {step} (day: {day:.2f}): {ts}")
+            hourly = np.asarray(self.stats[k]["hourly"])
+
+            if len(hourly) == 0:
+                continue
+
+            idx = np.arange(len(hourly))[::frequency]
+
+            if last_n is not None:
+                idx = idx[-last_n:]
+
+            print(f"\n{k}")
+            print("-" * 120)
+
+            header = (
+                f"{'step':>8} "
+                f"{'day':>10} "
+                + " ".join(f"{p:>12}" for p in p_labels)
+            )
+            print(header)
+
+            for i in idx:
+                vals = hourly[i]
+
+                row = (
+                    f"{i:8d} "
+                    f"{i * self.world['time'].dt / 24:10.2f} "
+                    + " ".join(fmt(v) for v in vals)
+                )
+                print(row)

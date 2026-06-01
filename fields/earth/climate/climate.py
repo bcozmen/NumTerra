@@ -4,25 +4,24 @@ from dataclasses import dataclass, field
 from fields import BaseModel
 
 
-from . import Sun, Pressure, Hydro, Wind, Thermal
-from .engines import ErosionEngine, WaterAdvectionEngine
+from . import Sun, Thermal, Pressure, Hydro, Wind,Water, Erosion
 
 
 map_info = {
     'Ta' : {
         'unit' : '°C',
         'description' : 'Air temperature',
-        'render' : {'cmap': 'RdYlBu_r', 'vrange': (-15, 40)},
+        'render' : {'cmap': 'RdYlBu_r'},
     },
     'Ts' : {
         'unit' : '°C',
         'description' : 'Surface (land) temperature',
-        'render' : {'cmap': 'RdYlBu_r', 'vrange': (-15, 40)},
+        'render' : {'cmap': 'RdYlBu_r'},
     },
     'Tw' : {
         'unit' : '°C',
         'description' : 'Water (ocean/lake) temperature',
-        'render' : {'cmap': 'Blues_r', 'vrange': (0, 30)},
+        'render' : {'cmap': 'Blues_r'},
     },
     'Wa' : {
         'unit' : 'kg/m²',
@@ -89,10 +88,6 @@ class ClimateConfig:
     advection_scheme: str = 'semi_lagrangian' # Advection integration scheme
     advection_poisson_iterations: int = 15 # Iterations for Poisson solver to enforce mass continuity in advection
 
-    # Water advection parameters
-    water_advection_slope_exponent: float = 2.0   # Weight steeper slopes more: 1=linear, 2=quadratic, …
-    water_advection_flow_rate: float = 0.5        # Fraction of cell's water drained per hour at maximum weight
-    water_advection_field_capacity: float = 20.0  # Soil moisture held by capillary forces [mm]; only excess above this routes
 
 class Climate(BaseModel):
     info = {
@@ -103,21 +98,15 @@ class Climate(BaseModel):
         super().__init__(world)
         self.config = ClimateConfig()
 
-        self.wind = Wind(self.world, self.config.advection_scheme, self.config.advection_poisson_iterations)
-        self.thermal = Thermal(self.world)
-        self.hydro = Hydro(self.world)
+        
         self.sun = Sun(self.world)
+        self.thermal = Thermal(self.world)
         self.pressure = Pressure(self.world)
+        self.hydro = Hydro(self.world)
 
-        self.water_advection_engine = WaterAdvectionEngine(
-            cell_size=self.world.area.cell_size,
-            max_altitude=self.world.max_altitude,
-            slope_exponent=self.config.water_advection_slope_exponent,
-            flow_rate=self.config.water_advection_flow_rate,
-            field_capacity=self.config.water_advection_field_capacity
-        )
-
-        self.erosion_engine = ErosionEngine() # Placeholder for future erosion logic
+        self.wind = Wind(self.world, self.config.advection_scheme, self.config.advection_poisson_iterations)
+        self.water = Water(self.world)
+        self.erosion = Erosion(self.world) # Placeholder for future erosion logic
         
         H, H_grad_i, H_grad_j, sea_level, M_sea, _, Ta, Ts, Tw, P, Wa, Wa_max, Wc, Ws, V, Vspeed, Evap, Condensation, Precip = self.get_maps()
         self._init_prognostic(H, H_grad_i, H_grad_j, M_sea, Ta, Wa, Wc, Ws, Vspeed)
@@ -150,21 +139,18 @@ class Climate(BaseModel):
         H, H_grad_i, H_grad_j, sea_level, M_sea, _, Ta, Ts, Tw, P, Wa, Wa_max, Wc, Ws, V, Vspeed, Evap, Condensation, Precip = self.get_maps()
         dt, dt_seconds = self.world['time'].dt, self.world['time'].dt * 3600.0
         
-        # Calculate Prognostic Sun, Wa_max, Evap, Condensation, Precip
         Sun, Shadow = self.sun(H, H_grad_i, H_grad_j, M_sea, Wa, Wc)
-        Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Wa, Wc, M_sea, Ws, Vspeed)
 
-        # Update thermal
         dTa, dTs, dTw = self.thermal(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc)
         Ta, Ts, Tw = Ta + dTa * dt_seconds, Ts + dTs * dt_seconds, Tw + dTw * dt_seconds
 
-        #Calculate Pressure
-        P = self.pressure(H, Ta, Wa)
+        Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Wa, Wc, M_sea, Ws, Vspeed)
 
-        # Apply mass balance; handle supersaturation and latent heat entirely inside hydro
         Ta, Wa, Wc, Ws, Condensation = self.hydro.apply_mass_balance(
             Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, self.thermal
         )
+
+        P = self.pressure(H, Ta, Wa)  # ← now uses Ta_final and Wa_final
 
         H, Ta, Wa, Wc, Ws, V = self._advect(H, M_sea, sea_level, Ta, P, Wa, Wc, Ws, V, dt)
         
@@ -195,8 +181,8 @@ class Climate(BaseModel):
         sub_dt = dt / self.config.adv_sub_steps
         for _ in range(self.config.adv_sub_steps):
             Ta, Wa, Wc, V = self.wind(H, sea_level, Ta, P, V, Wa, Wc, sub_dt)
-            Ws = self.water_advection_engine(H, M_sea, Ws, sub_dt)
-            H = self.erosion_engine(H, Ws, Ta, sub_dt) # Placeholder for future erosion logic
+            Ws = self.water(H, M_sea, Ws, sub_dt)
+            H = self.erosion(H, Ws, Ta, sub_dt) # Placeholder for future erosion logic
         return H, Ta, Wa, Wc, Ws, V
 
     def _init_prognostic(self, H, H_grad_i, H_grad_j, M_sea, Ta, Wa, Wc, Ws, Vspeed):

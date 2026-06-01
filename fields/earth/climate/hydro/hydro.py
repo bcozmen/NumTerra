@@ -10,6 +10,7 @@ class HydroConfig:
 
     Ce_water : float = 0.0015 # Evaporation coefficient over water (tunable parameter for evaporation rate)
     Ce_land : float = 0.0008  # Evaporation coefficient over land
+    lake_evap_threshold: float = 20.0  # mm; land cells with Ws above this are treated as inland lakes and use Ce_water
     precip_conversion_rate : float = 1.0 # Tunable parameter for actual precipitation conversion
     cloud_delay_factor : float = 0.5 # Proportion of precip that remains as clouds per tick
     rH_condensation_threshold: float = 0.85  # Relative humidity at which clouds start forming (0-1)
@@ -60,9 +61,13 @@ class Hydro:
         Vspeed = Vspeed + 0.1  # Avoid zero wind speed
         dt = self.world['time'].dt
         
-        # Calculate distinct evaporation potentials for land and water using their unique coefficients
+        # Inland lake mask: non-sea land cells with standing water above threshold evaporate at the water rate,
+        # preventing unlimited basin accumulation. Below the threshold, use the slower land coefficient.
+        M_lake = np.float32(Ws > self.config.lake_evap_threshold) * (1.0 - M_sea)
+        Ce_land_eff = M_lake * self.config.Ce_water + (1.0 - M_lake) * self.config.Ce_land
+
         evap_potential_water = self.config.Ce_water * Vspeed * np.maximum(0.0, Wa_max - Wa)
-        evap_potential_land = self.config.Ce_land * Vspeed * np.maximum(0.0, Wa_max - Wa)
+        evap_potential_land  = Ce_land_eff         * Vspeed * np.maximum(0.0, Wa_max - Wa)
 
         sea_evaporation = evap_potential_water
         # Land evaporation is limited by the actual soil moisture available per hour

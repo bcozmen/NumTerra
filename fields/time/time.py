@@ -35,7 +35,9 @@ class Time(BaseModel):
 
 
     # ── basic accessors ───────────────────────────────────────────────────────
-
+    @property
+    def date(self):
+        return self.tick.date()
     @property
     def hour(self):
         return self.tick.hour

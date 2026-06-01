@@ -2,7 +2,7 @@ import numpy as np
 from numba import njit, prange
 
 @njit(parallel=True)
-def d8_water_routing(H, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flow_rate):
+def d8_water_routing(surface, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flow_rate):
     """
     Multi-directional D8-style surface water routing (pull approach, parallel-safe).
 
@@ -12,7 +12,7 @@ def d8_water_routing(H, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flo
 
     Parameters
     ----------
-    H              : float32 (rows, cols)  — normalised terrain height [0, 1]
+    surface        : float32 (rows, cols)  — effective surface height [m]
     M_sea          : float32 (rows, cols)  — sea mask (1.0 = ocean, 0.0 = land)
     Ws             : float32 (rows, cols)  — surface water [mm]
     max_altitude   : float                 — physical height of H=1 [m]
@@ -26,7 +26,7 @@ def d8_water_routing(H, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flo
     -------
     Ws_out : float32 (rows, cols)
     """
-    rows, cols = H.shape
+    rows, cols = surface.shape
     Ws_out = np.empty_like(Ws)
 
     # 8-connected neighbour offsets (row-delta, col-delta)
@@ -52,25 +52,17 @@ def d8_water_routing(H, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flo
 
     flow_fraction = min(1.0, flow_rate * dt)   # fraction leaving per timestep (stability cap)
 
-    # Precompute terrain (metres) and effective surface for this timestep.
-    # terrain_m can be cached across timesteps externally if H never changes.
-    terrain_m = np.empty_like(H)
-    for i in range(rows):
-        for j in range(cols):
-            terrain_m[i, j] = H[i, j] * max_altitude
-
-    surface = np.empty_like(H)
-    for i in range(rows):
-        for j in range(cols):
-            surface[i, j] = terrain_m[i, j] + Ws[i, j] * 0.001
 
     # First pass: compute routing weights to each of the 8 neighbours and totals.
     weights = np.zeros((rows, cols, 8), dtype=np.float32)
     totals = np.zeros((rows, cols), dtype=np.float32)
+    outflows = np.zeros((rows, cols), dtype=np.float32)
+
     for i in prange(rows):
         for j in range(cols):
             if M_sea[i, j] > 0.5:
                 totals[i, j] = 0.0
+                outflows[i, j] = 0.0
                 continue
 
             h_c = surface[i, j]
@@ -97,6 +89,29 @@ def d8_water_routing(H, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flo
                     total_w += w
 
             totals[i, j] = np.float32(total_w)
+            
+            # Compute outgoing water limit to prevent sloshing overshoots.
+            # Max loss to a neighbour is limited so the source doesn't drop below the destination.
+            outflow_val = Ws[i, j] * flow_fraction
+            if total_w > 0.0:
+                limit = 1e9
+                for k in range(8):
+                    w = weights[i, j, k]
+                    if w > 0.0:
+                        ni = i + NDI[k]
+                        nj = j + NDJ[k]
+                        h_diff = h_c - surface[ni, nj]
+                        # Safe transfer limit (in mm) formula ensures source's new surface >= destination's
+                        k_limit = (h_diff * 1000.0) / (1.0 + w / total_w)
+                        if k_limit < limit:
+                            limit = k_limit
+                
+                if limit < outflow_val:
+                    outflow_val = limit
+            else:
+                outflow_val = 0.0
+                
+            outflows[i, j] = np.float32(outflow_val)
 
     # Second pass: pull inflow from neighbours using precomputed neighbour weights.
     for i in prange(rows):
@@ -119,13 +134,13 @@ def d8_water_routing(H, M_sea, Ws, max_altitude, dx, dy, dt, slope_exponent, flo
                 if w_to_me <= 0.0:
                     continue
 
-                own_outflow_n = Ws[ni, nj] * flow_fraction
+                own_outflow_n = outflows[ni, nj]
                 net_inflow += own_outflow_n * (w_to_me / total_n)
 
             if M_sea[i, j] > 0.5:
                 Ws_out[i, j] = np.float32(Ws[i, j] + net_inflow)
             else:
-                own_outflow = Ws[i, j] * flow_fraction if totals[i, j] > 0.0 else 0.0
+                own_outflow = outflows[i, j]
                 Ws_out[i, j] = max(np.float32(0.0), np.float32(Ws[i, j] - own_outflow + net_inflow))
 
     return Ws_out

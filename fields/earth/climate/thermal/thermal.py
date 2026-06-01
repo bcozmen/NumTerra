@@ -21,6 +21,11 @@ class ThermalConfig:
     greenhouse_water_vapor_emissivity_multiplier: float = 0.2 # Water vapor contribution; base + this must stay <= 1.0
     greenhouse_water_vapor_absorption_coef: float = 0.04  # Absorption coef; saturates around Wa~50 kg/m²
 
+    # Atmospheric solar absorption: fraction of surface-reaching solar that was absorbed by the atmosphere
+    # above (by ozone, water vapour, aerosols). ~30 % of TOA solar never reaches the ground; roughly half
+    # of that is absorbed (rest reflected). 0.20 ≈ 15% of TOA absorbed / 70% transmitted = ~0.21.
+    solar_atm_absorption: float = 0.20
+
 
 
 class Thermal:
@@ -68,8 +73,13 @@ class Thermal:
         dT_land_solar_evap   = self.calculate_surface_heating(Sun, Evap, self.config.albedo_land, self.world.constants['Lv'], self.config.c_land)
         dT_water_solar_evap  = self.calculate_surface_heating(Sun, Evap, self.config.albedo_water, self.world.constants['Lv'], self.config.c_water)
 
+        # Direct solar heating of the air column: the fraction of surface-reaching solar that was
+        # absorbed by the atmosphere above (clouds, water vapour, ozone) rather than being reflected
+        # to space. Without this term the energy is simply discarded and Ta has no diurnal cycle.
+        dT_air_solar = Sun * self.config.solar_atm_absorption / self.config.c_air
+
         dT_air_sensible = (M_sea * dT_air_from_water) + ((1 - M_sea) * dT_air_from_land)
-        dTa = dT_air_sensible + dT_air_latent + dT_air_lw
+        dTa = dT_air_sensible + dT_air_latent + dT_air_lw + dT_air_solar
         dTs = (dT_land_solar_evap  + dT_land_lw  - dT_land_loss)  * (1 - M_sea)
         dTw = (dT_water_solar_evap + dT_water_lw - dT_water_loss) * M_sea
 
