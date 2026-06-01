@@ -6,12 +6,12 @@ from .numba import compute_thermal_step
 @dataclass
 class ThermalConfig:
     # Effective heat capacities for the whole vertical column (J/m2/K)
-    c_air: float = 1.004e7   # 1004 J/kg/K * ~10000 kg/m2 of air column
+    c_air: float = 1.03e7    # 1004 J/kg/K * ~10000 kg/m2 of air column
     c_land: float = 2.0e6    # Land surface / ~1 m soil column capacity
-    c_water: float = 4.184e7 # ~10m deep active mixing layer (1000kg/m3 * 10m * 4184 J/kg/K)
+    c_water: float = 5.184e7 # ~10m deep active mixing layer (1000kg/m3 * 10m * 4184 J/kg/K)
     
     # Radiation parameters
-    sensible_heat_coef: float = 1.0 # Coefficient for sensible heat exchange
+    sensible_heat_coef: float = 8.0 # Coefficient for sensible heat exchange
     albedo_land: float = 0.25  # Average albedo for land
     albedo_water: float = 0.06 # Average albedo for water
 
@@ -19,14 +19,15 @@ class ThermalConfig:
     lapse_rate: float = 0.0065 # Temperature drop per meter altitude (K/m)
         
     # Longwave radiation parameters
-    greenhouse_base_emissivity: float = 0.45  # Baseline emissivity from well-mixed GHGs (CO2, etc)
-    greenhouse_water_vapor_emissivity_multiplier: float = 0.5 # Water vapor contribution; base + this must stay <= 1.0
+    greenhouse_base_emissivity: float = 0.55  # Baseline emissivity from well-mixed GHGs (CO2, etc)
+    greenhouse_water_vapor_emissivity_multiplier: float = 0.4 # Water vapor contribution
     greenhouse_water_vapor_absorption_coef: float = 0.04  # Absorption coef; saturates around Wa~50 kg/m²
+    greenhouse_cloud_emissivity_multiplier: float = 0.0 # Clouds are very efficient absorbers/emitters
 
     # Atmospheric shortwave heating term applied to the air column.
     # `Sun` is already defined as surface-reaching flux in climate.py map_info, so adding a
     # non-zero value here can double-count incoming solar energy.
-    solar_atm_absorption: float = 0.0
+    solar_atm_absorption: float = 1.0
 
 
 
@@ -67,6 +68,7 @@ class Thermal:
             self.config.sensible_heat_coef, self.config.c_air, self.config.c_land, self.config.c_water,
             self.world.constants['Lv'], self.world.constants['sigma'],
             self.config.greenhouse_base_emissivity, self.config.greenhouse_water_vapor_emissivity_multiplier, self.config.greenhouse_water_vapor_absorption_coef,
+            self.config.greenhouse_cloud_emissivity_multiplier,
             self.config.albedo_land, self.config.albedo_water, self.config.solar_atm_absorption
         )
 

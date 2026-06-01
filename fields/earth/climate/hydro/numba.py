@@ -28,8 +28,12 @@ def compute_hydro_step(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed,
             
             for _ in range(atmospheric_layer_count):
                 p_safe = max(p_curr, 1e-5)
-                # Magnus-Tetens
-                es = 6.112 * math.exp((17.67 * ta_curr) / (ta_curr + 243.5)) * 100.0
+                # Magnus-Tetens with safety for singularity around -243.5C
+                if ta_curr > -240.0:
+                    es = 6.112 * math.exp((17.67 * ta_curr) / (ta_curr + 243.5)) * 100.0
+                else:
+                    es = 0.0
+                    
                 if es > 0.99 * p_safe:
                     es = 0.99 * p_safe
                 
@@ -56,7 +60,11 @@ def compute_hydro_step(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed,
             wa_max_surf = 0.0
             for _ in range(atmospheric_layer_count):
                 p_safe = max(p_curr, 1e-5)
-                es = 6.112 * math.exp((17.67 * t_surf) / (t_surf + 243.5)) * 100.0
+                if t_surf > -240.0:
+                    es = 6.112 * math.exp((17.67 * t_surf) / (t_surf + 243.5)) * 100.0
+                else:
+                    es = 0.0
+                    
                 if es > 0.99 * p_safe:
                     es = 0.99 * p_safe
                 
@@ -102,7 +110,7 @@ def compute_hydro_step(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed,
     return Wa_max, Evap, Condensation, Precip
 
 @njit(parallel=True)
-def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt):
+def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, Lv, c_air):
     rows, cols = Ta.shape
     for i in prange(rows):
         for j in range(cols):
@@ -124,6 +132,10 @@ def apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip,
             if excess > 0.0:
                 wa -= excess
                 wc += excess
+                
+                # Release latent heat for the excess condensation
+                # dT = (mass * Lv) / c_air
+                Ta[i, j] += (excess * Lv) / c_air
                 
                 excess_cond = excess / dt
                 Condensation[i, j] = cond + excess_cond

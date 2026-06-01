@@ -4,7 +4,7 @@ from numba import njit, prange
 @njit(parallel=True)
 def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc,
                          sensible_heat_coef, c_air, c_land, c_water,
-                         Lv, sigma, gh_base_eps, gh_wv_mult, gh_wv_coef,
+                         Lv, sigma, gh_base_eps, gh_wv_mult, gh_wv_coef, gh_cloud_mult,
                          albedo_land, albedo_water, solar_atm_absorption):
     rows, cols = Ta.shape
     dTa = np.zeros_like(Ta)
@@ -21,7 +21,12 @@ def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Pre
 
             # Longwave radiation
             Tk_air = max(Ta[i, j] + 273.15, 0.0)
-            eps_a = gh_base_eps + gh_wv_mult * (1.0 - np.exp(-gh_wv_coef * max(Wa[i, j], 0.0)))
+            
+            # Atmospheric emissivity combines base (CO2), water vapor, and clouds
+            eps_wv = gh_wv_mult * (1.0 - np.exp(-gh_wv_coef * max(Wa[i, j], 0.0)))
+            eps_cloud = gh_cloud_mult * (1.0 - np.exp(-2.0 * max(Wc[i, j], 0.0))) # Generic cloud opacity
+            
+            eps_a = gh_base_eps + eps_wv + eps_cloud
             if eps_a > 1.0: eps_a = 1.0
             if eps_a < 0.0: eps_a = 0.0
             

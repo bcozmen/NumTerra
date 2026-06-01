@@ -39,7 +39,10 @@ class Hydro:
         
         Returns updated (Ta, Wa, Wc, Ws, Condensation).
         """
-        apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt)
+        Lv = self.world.constants['Lv']
+        c_air = thermal.config.c_air
+        
+        apply_mass_balance_numba(Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, Lv, c_air)
         return Ta, Wa, Wc, Ws, Condensation
 
 
@@ -146,5 +149,10 @@ class HydroNoNumba:
         excess_cond = excess / dt
         if np.any(excess_cond > 0):
             Condensation += excess_cond
+            
+            # Release latent heat
+            Lv = self.world.constants['Lv']
+            c_air = thermal.config.c_air
+            Ta += (excess * Lv) / c_air
 
         return Ta, Wa, Wc, Ws, Condensation

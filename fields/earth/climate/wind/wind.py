@@ -11,7 +11,7 @@ from .numba import (
 class WindConfig:
     lapse_rate: float = 0.0098  # Dry adiabatic lapse rate (K/m)
     wind_friction: float = 0.012  # Friction coefficient for wind
-    wind_nudge_factor: float = 0.01  # Strength of nudging towards macro-system vector
+    wind_nudge_factor: float = 0.005  # Strength of nudging towards macro-system vector
 
 
     v_sigma : float = 1.0 # Standard deviation of wind speed fluctuations (m/s)
@@ -53,8 +53,8 @@ class Wind:
         v_macro, theta_macro = self.oscillator.step(dt)
         rad = np.radians(theta_macro)
         nudge = cfg.wind_nudge_factor * dt
-        v_x += (-v_macro * np.sin(rad) - v_x) * nudge
-        v_y += (-v_macro * np.cos(rad) - v_y) * nudge
+        v_x += (-v_macro * np.sin(rad)) * nudge
+        v_y += (-v_macro * np.cos(rad)) * nudge
 
         # 3. Mass conservation: divergence → Jacobi pressure solve → projection (in-place)
         pressure_project(v_x, v_y, self.dx, self.dy, self.poisson_iterations)
