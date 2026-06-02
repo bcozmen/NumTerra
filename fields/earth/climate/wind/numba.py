@@ -72,9 +72,19 @@ def wind_accelerate(P, v_x, v_y, dx, dy, rho_air, f, wind_friction, dt):
             else:               dP_dx = (P[i, j+1]     - P[i, j-1])     / (2*dx)
             vx = v_x[i, j]; vy = v_y[i, j]
             # Coriolis force: object moving in +x is pushed to -y (in Northern Hemisphere, sin(lat)>0 => f>0)
-            v_x[i, j] += (-dP_dx / rho_air + f * vy - wind_friction * vx) * dt
-            v_y[i, j] += (-dP_dy / rho_air - f * vx - wind_friction * vy) * dt
+            #v_x[i, j] += (-dP_dx / rho_air + f * vy - wind_friction * vx) * dt
+            #v_y[i, j] += (-dP_dy / rho_air - f * vx - wind_friction * vy) * dt
+            v_x[i, j] += (-dP_dx / rho_air) * dt
+            v_y[i, j] += (-dP_dy / rho_air) * dt
 
+            theta = f * dt
+            c, s = np.cos(theta), np.sin(theta)
+
+            v_x[i,j] = v_x[i,j] * c - v_y[i,j] * s
+            v_y[i,j] = v_x[i,j] * s + v_y[i,j] * c
+
+            v_x[i, j] /= (1.0 + wind_friction * dt)
+            v_y[i, j] /= (1.0 + wind_friction * dt)
 
 @njit(parallel=True)
 def pressure_project(v_x, v_y, dx, dy, iterations):
@@ -115,7 +125,7 @@ def pressure_project(v_x, v_y, dx, dy, iterations):
 
 
 @njit(parallel=True)
-def orographic_cooling(H, sea_level, v_x, v_y, dx, dy, lapse_rate):
+def orographic_cooling_old(H, sea_level, v_x, v_y, dx, dy, lapse_rate):
     """Temperature tendency from orographic lifting (gradient of terrain clamped to land)."""
     rows, cols = H.shape
     dTa = np.empty_like(v_x)
@@ -141,4 +151,41 @@ def orographic_cooling(H, sea_level, v_x, v_y, dx, dy, lapse_rate):
                 h_jp = max(H[i, j+1] - sea_level, 0.0); sx = 0.5 / dx
             w = v_y[i, j] * (h_ip - h_im) * sy + v_x[i, j] * (h_jp - h_jm) * sx
             dTa[i, j] = -w * lapse_rate
+    return dTa
+
+@njit(parallel=True)
+def orographic_cooling(H, sea_level, v_x, v_y, dx, dy, lapse_rate):
+    rows, cols = H.shape
+    dTa = np.empty_like(v_x)
+
+    for i in prange(rows):
+        for j in range(cols):
+
+            # terrain height above sea level
+            h = H[i, j] - sea_level
+
+            # central differences for terrain slope
+            if 0 < i < rows - 1:
+                dhdy = (H[i+1, j] - H[i-1, j]) / (2*dy)
+            elif i == 0:
+                dhdy = (H[i+1, j] - H[i, j]) / dy
+            else:
+                dhdy = (H[i, j] - H[i-1, j]) / dy
+
+            if 0 < j < cols - 1:
+                dhdx = (H[i, j+1] - H[i, j-1]) / (2*dx)
+            elif j == 0:
+                dhdx = (H[i, j+1] - H[i, j]) / dx
+            else:
+                dhdx = (H[i, j] - H[i, j-1]) / dx
+
+            # vertical motion proxy (flow into slope)
+            w = -(v_x[i, j] * dhdx + v_y[i, j] * dhdy)
+
+            # only rising air cools
+            if w > 0.0:
+                dTa[i, j] = -lapse_rate * w
+            else:
+                dTa[i, j] = 0.0
+
     return dTa

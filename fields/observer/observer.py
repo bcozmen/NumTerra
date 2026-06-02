@@ -86,7 +86,7 @@ class Observer(BaseModel):
             if self.world["time"].is_first_hour_of_month:
                 s["monthly"].append(s["buffer"].mean(30 * 24))
 
-    def plot(self, keys=None, n_columns=2):
+    def plot(self, keys=None, n_columns=2, last_n=None):
         if keys is None:
             keys = list(self.stats.keys())
 
@@ -99,6 +99,12 @@ class Observer(BaseModel):
 
             if s.ndim != 2:
                 raise ValueError(f"Expected (time, percentiles), got {s.shape}")
+
+            if last_n is not None:
+                if type(last_n) == int:
+                    s = s[-last_n:]
+                elif type(last_n) == tuple:
+                    s = s[-last_n[0]:-last_n[1]]
 
             dt = self.world['time'].dt
             hours = np.arange(-len(s) + 1, 1) * dt

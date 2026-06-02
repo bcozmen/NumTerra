@@ -6,7 +6,7 @@ from .numba import compute_thermal_step
 @dataclass
 class ThermalConfig:
     # Effective heat capacities for the whole vertical column (J/m2/K)
-    c_air: float = 1.03e7    # 1004 J/kg/K * ~10000 kg/m2 of air column
+    c_air: float = 1.03e6    # 1004 J/kg/K * ~10000 kg/m2 of air column
     c_land: float = 2.0e6    # Land surface / ~1 m soil column capacity
     c_water: float = 5.184e7 # ~10m deep active mixing layer (1000kg/m3 * 10m * 4184 J/kg/K)
     

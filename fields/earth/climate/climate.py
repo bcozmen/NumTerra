@@ -183,8 +183,8 @@ class Climate(BaseModel):
         sub_dt = dt / self.config.adv_sub_steps
         for _ in range(self.config.adv_sub_steps):
             Ta, Wa, Wc, V = self.wind(H, sea_level, Ta, P, V, Wa, Wc, sub_dt)
-            Ws = self.water(H, M_sea, Ws, sub_dt)
-            H = self.erosion(H, Ws, Ta, sub_dt) # Placeholder for future erosion logic
+            #Ws = self.water(H, M_sea, Ws, sub_dt)
+            #H = self.erosion(H, Ws, Ta, sub_dt) # Placeholder for future erosion logic
         return H, Ta, Wa, Wc, Ws, V
 
     def _init_prognostic(self, H, H_grad_i, H_grad_j, M_sea, Ta, Wa, Wc, Ws, Vspeed):
