@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from .area import Area
 from fields.earth import __default_models__ as earth_models
 from fields.time import Time, TimeRegister
-from fields.plotter import WorldRenderer
+from fields.plotter import WorldRenderer, WorldRendererGif
 from fields.observer import Observer
 
 #Azimuth: North = 0° (360°), East = 90°, South = 180°.
@@ -49,7 +49,7 @@ class WorldConfig:
     debug : bool = False
 
 
-    init_models : list = field(default_factory=lambda: [Time] + earth_models + [WorldRenderer, Observer])#, Wind, Humidity, Erosion])
+    init_models : list = field(default_factory=lambda: [Time] + earth_models + [WorldRenderer, WorldRendererGif, Observer])#, Wind, Humidity, Erosion])
 
     def __post_init__(self):
         self.size = (2 ** self.size_exponent + 1, 2 ** self.size_exponent + 1)

@@ -5,6 +5,7 @@ from fields import BaseModel
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 from matplotlib.colors import (
     Normalize, LogNorm, PowerNorm, SymLogNorm,
     LinearSegmentedColormap,
@@ -91,9 +92,11 @@ class WorldRenderer(BaseModel):
 
     # -- public API ------------------------------------------------------------
 
-    def step(self, save_path = None) -> None:
+    def step(self, keys = None, save_path = None) -> None:
         """Redraw all panels with the current world state (no simulation step)."""
-        for key in self._ims:
+        if keys is None:
+            keys = self._ims
+        for key in keys:
             ax = self._ax_map[key]
             self._remove_contours(key)
 
@@ -143,6 +146,11 @@ class WorldRenderer(BaseModel):
         ri    = self._render_info(key)
         scale = ri.get("scale", "linear")
 
+
+        if vmin == vmax == 0.0 and key == "Sun":
+            vmax = 1.0 
+            vmin = 0.0
+
         if scale == "log":
             safe_min = max(vmin, 1e-6)
             safe_max = max(vmax, safe_min * 10)
@@ -181,8 +189,7 @@ class WorldRenderer(BaseModel):
         info     = self.world.map_info.get(key, {})
         unit     = info.get("unit", "")
         unit_str = f" ({unit})" if unit else ""
-        return (f"{key}{unit_str}  "
-                f"[{float(np.nanmin(data)):.2f} … {float(np.nanmax(data)):.2f}]")
+        return (f"{key}{unit_str}")#f"[{float(np.nanmin(data)):.2f} … {float(np.nanmax(data)):.2f}]")
 
     # -- internal build --------------------------------------------------------
 
@@ -215,6 +222,7 @@ class WorldRenderer(BaseModel):
                 title = self._panel_title(key, data)
                 cbar  = self.fig.colorbar(im, ax=ax, fraction=0.046, pad=0.01, shrink=0.7)
 
+            self._set_distance_ticks(ax)
             self._ims[key]    = im
             self._cbars[key]  = cbar
             self._titles[key] = ax.set_title(title, fontsize=9)
@@ -222,6 +230,23 @@ class WorldRenderer(BaseModel):
 
         for ax in self._axes[len(self.keys):]:
             ax.set_visible(False)
+
+    def _set_distance_ticks(self, ax) -> None:
+        """Display image-index ticks as physical distances in kilometres."""
+        # imshow uses columns for x and rows for y.  Area.cell_size is stored
+        # in array order (row, column), so the values are intentionally
+        # reversed here.
+        cell_y, cell_x = self.world.area.cell_size
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+        ax.xaxis.set_major_formatter(
+            FuncFormatter(lambda value, _position: f"{int(value * cell_x / 1000):g}")
+        )
+        ax.yaxis.set_major_formatter(
+            FuncFormatter(lambda value, _position: f"{int(value * cell_y / 1000):g}")
+        )
+        ax.set_xlabel("x (km)", fontsize=8)
+        ax.set_ylabel("y (km)", fontsize=8)
 
     # -- height panel ----------------------------------------------------------
 
@@ -274,6 +299,7 @@ class WorldRenderer(BaseModel):
         max_alt   = self.world.max_altitude
         land_max  = (1.0 - sea_level) * max_alt
         sea_min   = -sea_level * max_alt
+        return "Wind Map"
         return (f"H  (m rel. sea level)"
                 f"  │  land: 0 … {land_max:.0f} m"
                 f"  │  sea: {sea_min:.0f} … 0 m")

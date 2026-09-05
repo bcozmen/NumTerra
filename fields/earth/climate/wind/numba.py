@@ -80,8 +80,13 @@ def wind_accelerate(P, v_x, v_y, dx, dy, rho_air, f, wind_friction, dt):
             theta = f * dt
             c, s = np.cos(theta), np.sin(theta)
 
-            v_x[i,j] = v_x[i,j] * c - v_y[i,j] * s
-            v_y[i,j] = v_x[i,j] * s + v_y[i,j] * c
+            # Rotate both components from the same pre-rotation state.
+            # Using the updated x component in the y equation changes the
+            # magnitude of the velocity and is not a rotation.
+            old_vx = v_x[i, j]
+            old_vy = v_y[i, j]
+            v_x[i,j] = old_vx * c - old_vy * s
+            v_y[i,j] = old_vx * s + old_vy * c
 
             v_x[i, j] /= (1.0 + wind_friction * dt)
             v_y[i, j] /= (1.0 + wind_friction * dt)
@@ -161,8 +166,10 @@ def orographic_cooling(H, sea_level, v_x, v_y, dx, dy, lapse_rate):
     for i in prange(rows):
         for j in range(cols):
 
-            # terrain height above sea level
-            h = H[i, j] - sea_level
+            # Do not apply terrain-lifting cooling over sea-level cells.
+            if H[i, j] <= sea_level:
+                dTa[i, j] = 0.0
+                continue
 
             # central differences for terrain slope
             if 0 < i < rows - 1:
@@ -179,8 +186,8 @@ def orographic_cooling(H, sea_level, v_x, v_y, dx, dy, lapse_rate):
             else:
                 dhdx = (H[i, j] - H[i, j-1]) / dx
 
-            # vertical motion proxy (flow into slope)
-            w = -(v_x[i, j] * dhdx + v_y[i, j] * dhdy)
+            # Positive flow along the terrain gradient is rising motion.
+            w = v_x[i, j] * dhdx + v_y[i, j] * dhdy
 
             # only rising air cools
             if w > 0.0:

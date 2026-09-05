@@ -10,11 +10,12 @@ from fields import BaseModel
 @dataclass
 class TimeConfig:
     start_year: int = 2000
-    start_month: int = 3
+    # Keep the default start aligned with the documented January baseline.
+    start_month: int = 1
     start_day: int = 1
-    start_hour: int = 6
+    start_hour: int = 0
 
-    dt : int = 2 #time step in hours
+    dt : int = 1 #time step in hours
 class Time(BaseModel):
     info = {
         'name':'time',
@@ -23,7 +24,7 @@ class Time(BaseModel):
     def __init__(self, world, config = None):
         super().__init__(world, config)
         self.__dict__.update(TimeConfig().__dict__) # set default config values
-        # start at 1st of January 2000 at 00:00
+        # Start at 1 January 2000 at 00:00.
         self.tick = datetime(self.start_year, self.start_month, self.start_day, self.start_hour)
     
     def __str__(self):

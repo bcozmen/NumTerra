@@ -1,0 +1,1 @@
+Sun = S0 x Cos Incident x Atmospheric Transmission x Shadow Map

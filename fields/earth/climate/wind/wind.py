@@ -11,15 +11,15 @@ from .numba import (
 class WindConfig:
     lapse_rate: float = 0.0098  # Dry adiabatic lapse rate (K/m)
     wind_friction: float = 0.001  # Friction coefficient for wind
-    wind_nudge_timescale: float = 6.0 # Time scale for nudging towards prevailing wind (hours)
-    wind_sub_steps: int = 10 # Number of sub-steps for wind acceleration to improve stability
+    wind_nudge_timescale: float = 9.0 # Time scale for nudging towards prevailing wind (hours)
+    wind_sub_steps: int = 6 # Number of sub-steps for wind acceleration to improve stability
     pressure_gradient_factor: float = 0.02  # Scaling factor for pressure gradient force
 
-    v_sigma : float = 1.0 # Standard deviation of wind speed fluctuations (m/s)
-    v_relaxation : float = 72.0  # Time scale for wind speed to relax back to prevailing speed (hours)
+    v_sigma : float = 6.0 # Standard deviation of wind speed fluctuations (m/s)
+    v_relaxation : float = 32.0  # Time scale for wind speed to relax back to prevailing speed (hours)
 
-    theta_sigma : float = 10.0 # Standard deviation of wind direction fluctuations (degrees)
-    theta_relaxation : float = 72.0 # Time scale for wind direction to relax back to prevailing direction (hours)
+    theta_sigma : float = 30.0 # Standard deviation of wind direction fluctuations (degrees)
+    theta_relaxation : float = 48.0 # Time scale for wind direction to relax back to prevailing direction (hours)
 
 
 class Wind:

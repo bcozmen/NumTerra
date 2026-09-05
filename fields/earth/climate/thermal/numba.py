@@ -2,10 +2,10 @@ import numpy as np
 from numba import njit, prange
 
 @njit(parallel=True)
-def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc,
+def compute_thermal_step(M_sea, Sun, Sun_atm, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc,
                          sensible_heat_coef, c_air, c_land, c_water,
-                         Lv, sigma, gh_base_eps, gh_wv_mult, gh_wv_coef, gh_cloud_mult,
-                         albedo_land, albedo_water, solar_atm_absorption):
+                         Lv, sigma, gh_base_eps, gh_wv_mult, gh_wv_coef, gh_cloud_mult, gh_cloud_coeff,
+                         albedo_land, albedo_water, external_heat_flux, dt):
     rows, cols = Ta.shape
     dTa = np.zeros_like(Ta)
     dTs = np.zeros_like(Ts)
@@ -15,20 +15,27 @@ def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Pre
         for j in range(cols):
             # Condensation is in mm/hr, convert to kg/m2/s
             heat_released = (Condensation[i, j] / 3600.0) * Lv
+            dT_air_external = external_heat_flux / c_air
             dT_air_latent = heat_released / c_air
 
-            dT_air_solar = Sun[i, j] * solar_atm_absorption / c_air
+            # True atmospheric solar absorption: energy that did not reach the surface (S0_toa - Sun).
+            # Sun_atm is computed in sun.py as S0*effective_incidence*(1-transmission).
+            dT_air_solar = Sun_atm[i, j] / c_air
 
             # Longwave radiation
             Tk_air = max(Ta[i, j] + 273.15, 0.0)
             
-            # Atmospheric emissivity combines base (CO2), water vapor, and clouds
-            eps_wv = gh_wv_mult * (1.0 - np.exp(-gh_wv_coef * max(Wa[i, j], 0.0)))
-            eps_cloud = gh_cloud_mult * (1.0 - np.exp(-2.0 * max(Wc[i, j], 0.0))) # Generic cloud opacity
-            
-            eps_a = gh_base_eps + eps_wv + eps_cloud
-            if eps_a > 1.0: eps_a = 1.0
-            if eps_a < 0.0: eps_a = 0.0
+            # --- Smooth Multiplicative Overlap Math ---
+            # Calculate the transparency (transmission) of each component
+            tau_base  = 1.0 - gh_base_eps
+            tau_wv    = 1.0 - (gh_wv_mult * (1.0 - np.exp(-gh_wv_coef * max(Wa[i, j], 0.0))))
+            tau_cloud = 1.0 - (gh_cloud_mult * (1.0 - np.exp(-gh_cloud_coeff * max(Wc[i, j], 0.0))))
+
+            # Combined transmission (energy that escapes directly to space)
+            tau_total = tau_base * tau_wv * tau_cloud
+
+            # Total Emissivity safely asymptotically approaches 1.0 smoothly!
+            eps_a = 1.0 - tau_total
             
             atmos_emission = eps_a * sigma * (Tk_air ** 4)
 
@@ -84,6 +91,6 @@ def compute_thermal_step(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Pre
                 # Acc
                 dTa[i, j] += dT_air_from_water * m_sea + dT_air_lw_water * m_sea
 
-            dTa[i, j] += dT_air_latent + dT_air_solar
+            dTa[i, j] += dT_air_latent + dT_air_solar + dT_air_external
 
-    return dTa, dTs, dTw
+    return dTa * dt, dTs * dt, dTw * dt

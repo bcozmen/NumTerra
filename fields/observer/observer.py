@@ -10,7 +10,7 @@ _SKIP = ("_grad_i", "_grad_j")
 
 @dataclass
 class ObserverConfig:
-    percentiles: list = field(default_factory=lambda: [0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99])
+    percentiles: list = field(default_factory=lambda: [0.0, 0.25, 0.5, 0.75, 1.0]) # Percentiles to track (e.g. [0.0, 0.25, 0.5, 0.75, 1.0])
     hourly_keep: int = 30 * 24
 
 
@@ -179,3 +179,4 @@ class Observer(BaseModel):
                     + " ".join(fmt(v) for v in vals)
                 )
                 print(row)
+

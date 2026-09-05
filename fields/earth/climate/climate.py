@@ -6,37 +6,58 @@ from fields import BaseModel
 
 from . import Sun, Thermal, Pressure, Hydro, Wind,Water, Erosion
 
+"""
+map_info = {
+    'H' : {
+        'interp_order' : 3,
+        'requires_grad' : True,
+        'normalize_sea_level' : True,
+        'unit' : 'm',
+        'description' : 'Height map of the terrain',
+        'render' : {'cmap': 'terrain'},  # composite: land=terrain, sea=Blues depth
+    },
+    'M_sea' : {
+        'interp_order' : 0,
+        'description' : 'Boolean mask indicating sea vs land',
+    },
+    'sea_level' : {
+        'interp_order' : 0,
+        'unit' : 'm',
+        'description' : 'Height threshold for sea level',
+    },
+}
+"""
 
 map_info = {
     'Ta' : {
         'unit' : '°C',
         'description' : 'Air temperature',
-        'render' : {'cmap': 'RdYlBu_r'},
+        'render' : {'cmap': 'RdYlBu_r', 'vrange': (0, 40)},
     },
     'Ts' : {
         'unit' : '°C',
         'description' : 'Surface (land) temperature',
-        'render' : {'cmap': 'RdYlBu_r'},
+        'render' : {'cmap': 'RdYlBu_r', 'vrange': (0, 45)},
     },
     'Tw' : {
         'unit' : '°C',
         'description' : 'Water (ocean/lake) temperature',
-        'render' : {'cmap': 'Blues_r'},
+        'render' : {'cmap': 'Blues_r', 'vrange': (-2, 32)},
     },
     'Wa' : {
         'unit' : 'kg/m²',
         'description' : 'Atmospheric water content',
-        'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
+        'render' : {'cmap': 'YlGnBu', 'scale': 'linear', 'vrange': (15, 40)},
     },
     'Wc' : {
         'unit' : 'kg/m²',
         'description' : 'Cloud liquid water content',
-        'render' : {'cmap': 'Blues', 'scale': 'linear'},
+        'render' : {'cmap': 'Blues', 'scale': 'linear', 'vrange': (0, 0.6)},  # No upper limit; clouds can accumulate
     },
     'Ws' : {
         'unit' : 'mm',
         'description' : 'Surface water (e.g. soil moisture, water bodies)',
-        'render' : {'cmap': 'YlGn', 'scale': 'linear', 'mask_sea': True},
+        'render' : {'cmap': 'YlGn', 'scale': 'linear', 'mask_sea': True, 'vrange': (0, 150)},  # No upper limit; surface water can accumulate
     },
     'V' : {
         'requires_magnitude' : True,
@@ -46,7 +67,7 @@ map_info = {
     'Sun' : {
         'unit' : 'W/m²',
         'description' : 'Solar energy input to the surface',
-        'render' : {'cmap': 'hot'},
+        'render' : {'cmap': 'hot', 'vrange': (0, 1500)},
     },
     'Shadow' : {
         'unit' : 'bool/float',
@@ -61,22 +82,22 @@ map_info = {
     'Wa_max' : {
         'unit' : 'kg/m²',
         'description' : 'Maximum atmospheric water capacity',
-        'render' : {'cmap': 'YlGnBu', 'scale': 'linear'},
+        'render' : {'cmap': 'YlGnBu', 'scale': 'linear', 'vrange': (15, 100)},
     },
     'Evap' : {
         'unit' : 'mm/hr',
         'description' : 'Evaporation rate',
-        'render' : {'cmap': 'PuBu', 'scale': 'linear'},
+        'render' : {'cmap': 'PuBu', 'scale': 'linear', 'vrange': (0, 0.3)},
     },
     'Condensation' : {
         'unit' : 'mm/hr',
         'description' : 'Condensation rate (vapor to cloud)',
-        'render' : {'cmap': 'PuBuGn', 'scale': 'linear'},
+        'render' : {'cmap': 'PuBuGn', 'scale': 'linear', 'vrange': (0, 0.3)},
     },
     'Precip' : {
         'unit' : 'mm/hr',
         'description' : 'Precipitation rate (cloud to surface)',
-        'render' : {'cmap': 'Blues', 'scale': 'linear'},
+        'render' : {'cmap' : 'Blues', 'scale' : 'linear', 'vrange' : (0, 0.2)},
     },
 }
 
@@ -140,13 +161,13 @@ class Climate(BaseModel):
         H, H_grad_i, H_grad_j, sea_level, M_sea, _, Ta, Ts, Tw, P, Wa, Wa_max, Wc, Ws, V, Vspeed, Evap, Condensation, Precip = self.get_maps()
         dt, dt_seconds = self.world['time'].dt, self.world['time'].dt * 3600.0
         
-        Sun, Shadow = self.sun(H, H_grad_i, H_grad_j, M_sea, Wa, Wc)
+        Sun, Shadow, Sun_atm = self.sun(H, H_grad_i, H_grad_j, M_sea, Wa, Wc)
 
         # Keep thermal and moisture budgets in phase: use hydro fluxes from this same step.
         Wa_max, Evap, Condensation, Precip = self.hydro(P, Ta, Ts, Tw, Wa, Wc, M_sea, Ws, Vspeed)
         
-        dTa, dTs, dTw = self.thermal(M_sea, Sun, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc)
-        Ta, Ts, Tw = Ta + dTa * dt_seconds, Ts + dTs * dt_seconds, Tw + dTw * dt_seconds
+        dTa, dTs, dTw = self.thermal(M_sea, Sun, Sun_atm, Ta, Ts, Tw, Vspeed, Evap, Condensation, Precip, Wa, Wc, dt_seconds)
+        Ta, Ts, Tw = Ta + dTa, Ts + dTs, Tw + dTw
 
         Ta, Wa, Wc, Ws, Condensation = self.hydro.apply_mass_balance(
             Ta, Wa, Wc, Ws, Wa_max, Evap, Condensation, Precip, dt, self.thermal
@@ -189,7 +210,7 @@ class Climate(BaseModel):
 
     def _init_prognostic(self, H, H_grad_i, H_grad_j, M_sea, Ta, Wa, Wc, Ws, Vspeed):
         """Computes dependent maps (Sun, Pressure, Moisture Capacity, Evaporation, Precipitation) sequentially."""
-        Sun, Shadow = self.sun(H, H_grad_i, H_grad_j, M_sea, Wa, Wc)
+        Sun, Shadow, _Sun_atm = self.sun(H, H_grad_i, H_grad_j, M_sea, Wa, Wc)
         # Temperature is diagnostic but initialized here since it's needed for pressure and hydro
         Ta, Ts, Tw = self.thermal.init(H, M_sea)
         P = self.pressure(H, Ta, Wa)
